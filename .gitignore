@@ -1,0 +1,11 @@
+# Machine-specific Claude Code settings (permission allowlists etc.)
+.claude/settings.local.json
+
+# Generated per machine by install.sh — never committed
+mcp/search.json
+
+# Scratch
+*.log
+*.part
+__pycache__/
+*.pyc

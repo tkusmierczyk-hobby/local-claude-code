@@ -1,0 +1,99 @@
+# Troubleshooting
+
+Start with `./test/preflight.sh`. It catches most installation problems without
+needing a model loaded.
+
+## The server will not start
+
+**"did not start (out of VRAM)"** — the expert split is too aggressive for your
+card. Delete the tuned value and re-measure:
+
+```bash
+rm ~/.local-claude/ncmoe && local-claude bench --tune
+```
+
+**Something else holds the GPU.** A previous server, or a benchmark run, may still
+own the VRAM. `local-claude stop`, then check with `nvidia-smi`.
+
+**It picked the wrong GPU.** Machines with integrated graphics usually enumerate
+them first. The launcher caches its choice:
+
+```bash
+cat ~/.local-claude/device          # e.g. Vulkan1
+rm ~/.local-claude/device           # re-detect
+LOCAL_DEVICE=Vulkan1 local-claude   # or force it
+```
+
+## Every request fails with an HTTP 500 Jinja error
+
+If it says **"System message must be at the beginning"**, the model's stock chat
+template is rejecting Claude Code's payload, which puts a system message last. The
+launcher normally patches around this automatically. Force a regeneration:
+
+```bash
+rm ~/.local-claude/templates/<model>.jinja
+local-claude stop && local-claude start
+```
+
+`LOCAL_TEMPLATE=0` reverts to the stock template, which will fail again — it is
+for diagnosis, not a fix. Background in [DESIGN-NOTES.md](DESIGN-NOTES.md).
+
+## Replies are empty, or contain only reasoning
+
+Thinking models spend the output budget on reasoning first. If `max_tokens` is
+small, the whole budget goes to the `thinking` block and no text comes out. Raise
+`CLAUDE_CODE_MAX_OUTPUT_TOKENS`, or turn reasoning off:
+
+```bash
+LOCAL_THINKING=0 local-claude
+```
+
+## The session overflows or "autocompact is thrashing"
+
+Claude Code assumes a 200k window for any model it does not recognise. The
+launcher tells it the truth by reading the running server's real context and
+exporting `CLAUDE_CODE_MAX_CONTEXT_TOKENS`. If you see this anyway, your context
+is too small — it must clear 100k, because Claude Code will not compact below
+that. Raise `LOCAL_CTX`, then re-tune.
+
+## Downloads
+
+**Stalled.** `local-claude models` labels a `.part` file `STALLED` when no fetcher
+is running for it, and prints the resume command. Re-running a pull is always
+safe: a complete file is verified and renamed, an incomplete one resumes.
+
+**Slow, or slower than the speed it reports.** If the average is far below every
+instantaneous sample, transfers are being re-downloaded and discarded. The fetcher
+avoids the known cause (never passing curl `--retry` alongside `-C -`), but a VPN
+or a throttling ISP will do it too.
+
+**Never edit `bin/*.sh` while a download runs.** bash reads a script by byte
+offset, so an edit shifts the remaining bytes under the running shell and it dies
+mid-file. Re-run the pull to resume.
+
+## It is slower than you expected
+
+Run `local-claude bench --tune` if you have not. Then check `--ubatch-size` — the
+default of 512 costs about 2.8× prefill on this kind of setup. See
+[TUNING.md](TUNING.md).
+
+If decode is far below the table there, confirm the model actually fits in RAM.
+Experts are memory-mapped; if the file is larger than free RAM, every token pages
+from disk and throughput collapses. `local-claude status` shows both.
+
+## Web search does not work
+
+It needs `requests` and `beautifulsoup4` for the python that `install.sh` found:
+
+```bash
+python3 -m pip install requests beautifulsoup4
+./install.sh                 # regenerates the MCP config
+```
+
+DuckDuckGo rate-limits and intermittently refuses; the test reports those as SKIP
+rather than failure. `LOCAL_SEARCH=0` disables the server entirely.
+
+## Claude Code says `unrecognized_model`
+
+Expected, and cosmetic. Local models are not in the client's catalog. The context
+warning that used to accompany it is handled by the launcher.

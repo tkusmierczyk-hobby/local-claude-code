@@ -1,0 +1,518 @@
+#!/usr/bin/env bash
+# local-claude — Claude Code running entirely on this machine.
+#
+# Architecture:
+#   Claude Code CLI (~/.local/bin/claude)
+#     └─ Anthropic Messages API → http://127.0.0.1:8080  (llama.cpp llama-server)
+#          └─ MoE model, split the way MoE actually wants to be split:
+#               • attention, KV cache, router, shared experts → GPU
+#               • routed expert weights                       → system RAM (--n-cpu-moe)
+#
+# Why that split: in a 35B-A3B model the experts are ~90% of the weights but only
+# 8 of 256 are read per token, so VRAM spent on them sits idle. Attention and the
+# KV cache are touched for every token, so they are what the GPU should hold.
+# See docs/MOE-OFFLOAD.md for the measurements behind this.
+#
+# Usage:
+#   ./local-claude [claude args...]           # interactive REPL
+#   ./local-claude -p "prompt"                # non-interactive print mode
+#   ./local-claude status                     # backend, model, tuning, VRAM
+#   ./local-claude start                      # start the server without launching Claude
+#   ./local-claude stop                       # stop the inference server
+#   ./local-claude bench [--tune]             # measure tok/s; --tune picks --n-cpu-moe
+#   ./local-claude pull <repo> <file> [sha]   # resumable model download (slow-link safe)
+#   ./local-claude models                     # list local GGUFs
+#   ./local-claude init                       # scaffold hooks/CLAUDE.md in current project
+#   ./local-claude attempts N "task"          # best-of-N, gated on .claude/verify.sh
+#
+# Env:
+#   LOCAL_MODEL_FILE=~/models/x.gguf   pick a model explicitly (default: best in MODELS_DIR)
+#   LOCAL_CTX=65536                    context window
+#   LOCAL_NCMOE=34                     expert layers kept in RAM (default: tuned value)
+#   LOCAL_THINKING=0                   disable chain-of-thought (much faster turns)
+#   LOCAL_TEMPLATE=0                   use the model's stock chat template (see docs)
+#   LOCAL_BACKEND=ollama               fall back to the old ollama backend
+#   LOCAL_MCP=1                        keep user MCP servers (off by default)
+#   LOCAL_SEARCH=0                     disable the local web-search MCP server
+#   LOCAL_RULES=""                     disable small-model rule injection
+
+set -euo pipefail
+
+# Resolve through the symlink so the launcher works from ~/.local/bin too.
+SELF="${BASH_SOURCE[0]}"
+while [ -L "$SELF" ]; do
+  link="$(readlink "$SELF")"
+  case "$link" in /*) SELF="$link" ;; *) SELF="$(dirname "$SELF")/$link" ;; esac
+done
+HERE="$(cd "$(dirname "$SELF")" && pwd)"
+
+PREFIX="${LOCAL_CLAUDE_PREFIX:-$HOME/.local/share/local-claude}"
+STATE_DIR="${LOCAL_CLAUDE_STATE:-$HOME/.local-claude}"
+MODELS_DIR="${MODELS_DIR:-$HOME/models}"
+LOCAL_BACKEND="${LOCAL_BACKEND:-llamacpp}"
+LOCAL_HOST="${LOCAL_HOST:-127.0.0.1}"
+LOCAL_PORT="${LOCAL_PORT:-8080}"
+mkdir -p "$STATE_DIR"
+
+# install.sh writes hardware-derived defaults here. Anything already set in the
+# environment wins, so these never override an explicit choice.
+if [[ -f "$STATE_DIR/hardware.env" ]]; then
+  while IFS='=' read -r k v; do
+    [[ "$k" =~ ^[A-Z_]+$ ]] || continue
+    [[ -n "${!k:-}" ]] || export "$k=$v"
+  done < "$STATE_DIR/hardware.env"
+fi
+
+# llama.cpp: the installed location first, then the legacy hand-install path.
+if [[ -z "${LLAMA_DIR:-}" ]]; then
+  for cand in "$PREFIX/current" "$HOME/opt/llamacpp/current"; do
+    [[ -x "$cand/llama-server" ]] && { LLAMA_DIR="$cand"; break; }
+  done
+  LLAMA_DIR="${LLAMA_DIR:-$PREFIX/current}"
+fi
+
+# ---- `init`: scaffold per-project automation --------------------------------
+if [[ "${1:-}" == "init" ]]; then
+  mkdir -p .claude
+  if [[ -f .claude/settings.json ]]; then
+    echo "SKIP: .claude/settings.json exists — merge hooks manually (see $HERE/hooks/)"
+  else
+    cat > .claude/settings.json <<EOF
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HERE/hooks/syntax_check.sh",
+            "timeout": 15,
+            "statusMessage": "Syntax check"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HERE/hooks/verify_on_stop.sh",
+            "timeout": 200,
+            "statusMessage": "Running project verification"
+          }
+        ]
+      }
+    ]
+  },
+  "permissions": {
+    "allow": [
+      "Bash(pytest*)",
+      "Bash(python3 -m pytest*)",
+      "Bash(python3 -m py_compile*)",
+      "Bash(git status*)",
+      "Bash(git diff*)",
+      "Bash(git log*)",
+      "Bash(ls*)"
+    ]
+  }
+}
+EOF
+    echo "OK: .claude/settings.json (syntax-check hook, verify-on-stop hook, safe allowlist)"
+  fi
+
+  if [[ -f CLAUDE.md ]]; then
+    echo "SKIP: CLAUDE.md exists"
+  else
+    TEST_CMD="TODO: fill in (e.g. python3 -m pytest -q)"
+    { [[ -f pyproject.toml || -f pytest.ini || -d tests ]]; } && TEST_CMD="python3 -m pytest -q"
+    EXTRA=""
+    [[ -f Makefile ]] && EXTRA="- Makefile targets: $(grep -oE '^[a-zA-Z0-9_-]+:' Makefile | tr -d ':' | head -6 | paste -sd' ' -)"$'\n'
+    [[ -f package.json ]] && EXTRA="${EXTRA}- Node project: see \"scripts\" in package.json"$'\n'
+    cat > CLAUDE.md <<EOF
+# Project notes for the coding agent
+
+## Commands
+- Run tests: $TEST_CMD
+$EXTRA
+## Rules
+- Work on exactly what the task asks; no drive-by refactors.
+- After code changes, always run the tests above before declaring done.
+- Never commit; the user reviews and commits.
+EOF
+    echo "OK: CLAUDE.md starter (edit the commands/rules to fit the project)"
+  fi
+
+  if [[ -f .claude/verify.sh.example || -f .claude/verify.sh ]]; then
+    echo "SKIP: verify.sh(.example) exists"
+  else
+    cat > .claude/verify.sh.example <<'EOF'
+#!/usr/bin/env bash
+# Rename to verify.sh (and chmod +x) to activate the stop-gate:
+# whenever the local agent tries to finish, this runs; failures are fed
+# back and it keeps working (max 2 auto-retries). Exit 0 = done allowed.
+set -e
+python3 -m pytest -q
+EOF
+    echo "OK: .claude/verify.sh.example (rename to verify.sh to enable the stop-gate)"
+  fi
+  exit 0
+fi
+
+# ---- `pull`: resumable model download ---------------------------------------
+if [[ "${1:-}" == "pull" ]]; then
+  shift
+  [[ $# -ge 2 ]] || { echo "usage: local-claude pull <hf-repo> <file.gguf> [sha256]"; exit 1; }
+  exec "$HERE/bin/fetch-model.sh" "$@"
+fi
+
+# ---- Model selection ---------------------------------------------------------
+# Newest complete .gguf wins, but a known-good main model is preferred over the
+# small plumbing-test model, and never pick up a half-downloaded *.part file.
+pick_model() {
+  if [[ -n "${LOCAL_MODEL_FILE:-}" ]]; then
+    [[ -f "$LOCAL_MODEL_FILE" ]] && { echo "$LOCAL_MODEL_FILE"; return; }
+    [[ -f "$MODELS_DIR/$LOCAL_MODEL_FILE" ]] && { echo "$MODELS_DIR/$LOCAL_MODEL_FILE"; return; }
+    echo "[local-claude] LOCAL_MODEL_FILE not found: $LOCAL_MODEL_FILE" >&2
+    return 1
+  fi
+  local m
+  for pat in 'Qwen3.6-35B-A3B*.gguf' '*35B-A3B*.gguf' '*A3B*.gguf' '*.gguf'; do
+    m="$(ls -t "$MODELS_DIR"/$pat 2>/dev/null | grep -v '\.part$' | grep -vi 'mmproj' | head -1 || true)"
+    [[ -n "$m" ]] && { echo "$m"; return; }
+  done
+  return 1
+}
+
+if [[ "${1:-}" == "models" ]]; then
+  echo "models in $MODELS_DIR:"
+  # LC_ALL=C throughout: this machine's locale formats decimals with a comma,
+  # which printf then refuses to read back.
+  ls -la "$MODELS_DIR"/*.gguf 2>/dev/null \
+    | LC_ALL=C awk '{printf "  %-58s %6.2f GB\n", $9, $5/1e9}' || echo "  (none)"
+  for p in "$MODELS_DIR"/*.part; do
+    [[ -e "$p" ]] || continue
+    base="$(basename "${p%.part}")"
+    total="$(grep -oE 'expected size: [0-9]+' "${p%.part}.log" 2>/dev/null | tail -1 | grep -oE '[0-9]+' || echo 0)"
+    state="DOWNLOADING"
+    if ! pgrep -f "fetch-model.sh .* $base" >/dev/null 2>&1; then
+      # pull-after.sh holds the next download until the current one lands.
+      if pgrep -f "pull-after.sh .* $base" >/dev/null 2>&1; then state="QUEUED"; else state="STALLED"; fi
+    fi
+    LC_ALL=C awk -v p="$p" -v h="$(stat -c%s "$p")" -v t="$total" -v st="$state" 'BEGIN {
+      if (t > 0) printf "  %-58s %6.2f GB  %s %d%% of %.1f GB\n", p, h/1e9, st, h*100/t, t/1e9
+      else       printf "  %-58s %6.2f GB  %s\n", p, h/1e9, st }'
+    # A 20 h transfer will be interrupted sooner or later; resuming costs one command.
+    [[ "$state" == "STALLED" ]] && echo "      resume: setsid nohup local-claude pull <repo> $base [sha256] </dev/null >/dev/null 2>&1 &"
+  done
+  exit 0
+fi
+
+# ---- llama.cpp backend -------------------------------------------------------
+llama_up() { curl -sf "http://$LOCAL_HOST:$LOCAL_PORT/health" >/dev/null 2>&1; }
+
+# A machine with an integrated GPU usually enumerates it first, and it is far
+# slower than the discrete card, so the discrete one is selected explicitly
+# rather than left to auto-detection.
+detect_device() {
+  [[ -s "$STATE_DIR/device" ]] && { cat "$STATE_DIR/device"; return; }
+  local dev
+  dev="$(LD_LIBRARY_PATH="$LLAMA_DIR" "$LLAMA_DIR/llama-server" --list-devices 2>/dev/null \
+        | awk -F: '/NVIDIA|Radeon RX|Arc/ {gsub(/ /,"",$1); print $1; exit}')"
+  [[ -n "$dev" ]] && echo "$dev" > "$STATE_DIR/device"
+  echo "$dev"
+}
+
+# --n-cpu-moe N keeps the experts of the first N layers in RAM. Lower N = more
+# expert weights on the GPU = faster, until VRAM overflows and it collapses.
+# `local-claude bench --tune` writes the measured best value here.
+default_ncmoe() {
+  [[ -s "$STATE_DIR/ncmoe" ]] && { cat "$STATE_DIR/ncmoe"; return; }
+  # Until `bench --tune` has measured this machine, keep every expert in RAM:
+  # that always starts, whatever the GPU. The model's own layer count is the
+  # right "all of them" value, so read it rather than assuming one.
+  local n
+  n="$(python3 "$HERE/bin/patch-gguf.py" "${1:-}" --show 2>/dev/null \
+       | awk -F= '/\.block_count /{gsub(/ /,"",$2); print $2; exit}')"
+  [[ "$n" =~ ^[0-9]+$ ]] && { echo "$n"; return; }
+  echo "${LOCAL_NCMOE_FALLBACK:-99}"
+}
+
+model_expert_count() {
+  python3 "$HERE/bin/patch-gguf.py" "$1" --show 2>/dev/null \
+    | awk -F= '/\.expert_count /{gsub(/ /,"",$2); print $2; exit}' | grep -E '^[0-9]+$' || echo 0
+}
+
+start_llama() {
+  local model="$1"
+  local ctx="${LOCAL_CTX:-131072}"
+  local ncmoe="${LOCAL_NCMOE:-$(default_ncmoe "$model")}"
+  local dev="${LOCAL_DEVICE:-$(detect_device)}"
+  local threads="${LOCAL_THREADS:-$(nproc --all 2>/dev/null | awk '{print int($1/2)}')}"
+  # Two slots, because Claude Code interleaves background calls (titles,
+  # summaries) with the conversation. Sharing one slot would evict the
+  # conversation's cached prefix and force a full re-prefill every turn.
+  # --kv-unified makes the two share one KV pool instead of splitting it in
+  # half, so a long conversation can use nearly all of LOCAL_CTX while the
+  # background slot only borrows the few hundred tokens it needs. Claude Code
+  # auto-compacts at 100k at the earliest, so the pool has to clear that.
+  local slots="${LOCAL_SLOTS:-2}"
+  local args=(
+    --model "$model"
+    --alias "$(basename "$model" .gguf)"
+    --host "$LOCAL_HOST" --port "$LOCAL_PORT"
+    --ctx-size "$ctx"
+    --parallel "$slots"
+    --kv-unified
+    --n-gpu-layers 999            # everything that is not pinned to CPU below
+    --flash-attn on
+    --cache-type-k "${LOCAL_KV_TYPE:-q8_0}"
+    --cache-type-v "${LOCAL_KV_TYPE:-q8_0}"
+    --threads "$threads"
+    --batch-size "${LOCAL_BATCH:-2048}"
+    --ubatch-size "${LOCAL_UBATCH:-2048}"   # 512 (the default) costs 2.8x prefill
+                                            # here: with experts on the CPU, bigger
+                                            # micro-batches amortise the expert GEMMs
+    --cache-reuse 256             # reuse KV across turns instead of re-prefilling
+    --cache-ram "${LOCAL_CACHE_RAM:-2048}"  # keep evicted prefixes, but the experts
+                                            # need the RAM more than the cache does
+    --jinja                       # tool calling needs the model's own template
+    --no-webui
+  )
+  # The expert split only means something for a MoE model; a dense one has no
+  # expert tensors for the flag to move.
+  if [[ "$(model_expert_count "$model")" -gt 0 ]]; then
+    args+=(--n-cpu-moe "$ncmoe")   # the whole trick — see docs/MOE-OFFLOAD.md
+  else
+    ncmoe="n/a (dense model)"
+  fi
+  # Claude Code sends its environment block as a *trailing* system message, and
+  # Qwen's stock template raises "System message must be at the beginning." on
+  # that — every request 500s. Serve a patched copy of the model's own template
+  # that merges system messages instead. LOCAL_TEMPLATE=0 uses the embedded one.
+  if [[ "${LOCAL_TEMPLATE:-}" != "0" ]]; then
+    local tpl="${LOCAL_TEMPLATE:-$STATE_DIR/templates/$(basename "$model" .gguf).jinja}"
+    if [[ ! -s "$tpl" || "$model" -nt "$tpl" ]]; then
+      "$HERE/bin/make-template.sh" "$model" "$tpl" >/dev/null 2>&1 \
+        || echo "[local-claude] no embedded chat template to patch; using the model's own" >&2
+    fi
+    [[ -s "$tpl" ]] && args+=(--chat-template-file "$tpl")
+  fi
+  # Qwen3.5/3.6 think by default, which is most of the latency on a local box.
+  # LOCAL_THINKING=0 turns it off via the model's own template switch.
+  [[ "${LOCAL_THINKING:-1}" == "0" ]] && args+=(--chat-template-kwargs '{"enable_thinking":false}')
+  [[ -n "$dev" ]] && args+=(--device "$dev")
+  [[ -n "${LOCAL_MMPROJ:-}" ]] && args+=(--mmproj "$LOCAL_MMPROJ")
+  [[ -n "${LOCAL_LLAMA_ARGS:-}" ]] && args+=(${LOCAL_LLAMA_ARGS})
+
+  echo "[local-claude] starting llama-server: $(basename "$model") ctx=$ctx (${slots} slots, shared) ncmoe=$ncmoe dev=${dev:-auto}" >&2
+  LD_LIBRARY_PATH="$LLAMA_DIR" nohup "$LLAMA_DIR/llama-server" "${args[@]}" \
+    >>"$STATE_DIR/llama-server.log" 2>&1 &
+  echo $! > "$STATE_DIR/llama.pid"
+  echo "$model" > "$STATE_DIR/model"
+  # A 22 GB model reads from disk on first load; be patient before giving up.
+  for _ in $(seq 1 "${LOCAL_START_TIMEOUT:-600}"); do
+    llama_up && return 0
+    kill -0 "$(cat "$STATE_DIR/llama.pid")" 2>/dev/null || break
+    sleep 1
+  done
+  echo "[local-claude] llama-server failed to start; last lines of $STATE_DIR/llama-server.log:" >&2
+  tail -15 "$STATE_DIR/llama-server.log" >&2
+  return 1
+}
+
+stop_llama() {
+  local stopped=1 pid
+  if [[ -f "$STATE_DIR/llama.pid" ]] && kill -0 "$(cat "$STATE_DIR/llama.pid")" 2>/dev/null; then
+    kill "$(cat "$STATE_DIR/llama.pid")" && stopped=0
+  else
+    # Deliberately not `pkill -f`: that pattern also matches the command line of
+    # whatever shell invoked us, and killing the caller is a memorable bug.
+    for pid in $(pgrep -f "llama-server --model" 2>/dev/null); do
+      [[ "$pid" == "$$" || "$pid" == "$PPID" ]] && continue
+      kill "$pid" 2>/dev/null && stopped=0
+    done
+  fi
+  rm -f "$STATE_DIR/llama.pid" "$STATE_DIR/model"
+  return $stopped
+}
+
+# ---- `stop` ------------------------------------------------------------------
+if [[ "${1:-}" == "stop" ]]; then
+  stop_llama && echo "llama-server stopped." || echo "llama-server not running."
+  if pkill -f "ollama serve" 2>/dev/null; then echo "ollama stopped."; fi
+  rm -f "$STATE_DIR/ollama.pid"
+  exit 0
+fi
+
+# ---- `start`: bring the server up and exit -----------------------------------
+if [[ "${1:-}" == "start" ]]; then
+  if llama_up; then echo "llama-server already up on http://$LOCAL_HOST:$LOCAL_PORT"; exit 0; fi
+  MODEL="$(pick_model)" || { echo "no model in $MODELS_DIR"; exit 1; }
+  start_llama "$MODEL"
+  exit $?
+fi
+
+# ---- `status` ----------------------------------------------------------------
+if [[ "${1:-}" == "status" ]]; then
+  echo "backend:  $LOCAL_BACKEND"
+  echo "binaries: $LLAMA_DIR ($(LD_LIBRARY_PATH="$LLAMA_DIR" "$LLAMA_DIR/llama-server" --version 2>&1 | head -1 | sed 's/version: //'))"
+  if llama_up; then
+    props="$(curl -sf "http://$LOCAL_HOST:$LOCAL_PORT/props" 2>/dev/null || echo '{}')"
+    echo "server:   UP on http://$LOCAL_HOST:$LOCAL_PORT"
+    echo "model:    $(python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('model_path','?'))" <<<"$props" 2>/dev/null || echo '?')"
+    echo "ctx:      $(python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('default_generation_settings',{}).get('n_ctx','?'))" <<<"$props" 2>/dev/null || echo '?')"
+  else
+    echo "server:   down"
+    echo "model:    $(pick_model 2>/dev/null || echo 'none found — run: local-claude pull ...')"
+  fi
+  echo "n-cpu-moe: ${LOCAL_NCMOE:-$(default_ncmoe)}$([[ -s "$STATE_DIR/ncmoe" ]] && echo ' (tuned)' || echo ' (default — run: local-claude bench --tune)')"
+  echo "device:   ${LOCAL_DEVICE:-$(detect_device)}"
+  nvidia-smi --query-gpu=name,memory.used,memory.total --format=csv,noheader 2>/dev/null | sed 's/^/gpu:      /'
+  free -g | awk '/^Mem:/ {printf "ram:      %d GB used / %d GB total\n", $3, $2}'
+  exit 0
+fi
+
+# ---- `bench` -----------------------------------------------------------------
+# Sweeps --n-cpu-moe and reports prefill/decode speed. --tune stores the winner.
+if [[ "${1:-}" == "bench" ]]; then
+  shift
+  exec "$HERE/test/bench.sh" "$@"
+fi
+
+# ---- `attempts`: best-of-N wrapper — retry until verify.sh passes ------------
+# Usage: local-claude attempts N "task prompt"
+# Runs up to N autonomous attempts; after each, .claude/verify.sh decides.
+# Failed attempts are reverted (git). Sampling temperature makes attempts differ.
+if [[ "${1:-}" == "attempts" ]]; then
+  shift
+  N="${1:?usage: local-claude attempts N \"task prompt\"}"; shift
+  TASK="${*:?usage: local-claude attempts N \"task prompt\"}"
+  [[ -x .claude/verify.sh ]] || { echo "attempts mode needs an executable .claude/verify.sh (acceptance test)"; exit 1; }
+  git rev-parse --is-inside-work-tree >/dev/null 2>&1 || { echo "attempts mode needs a git repo (for safe revert)"; exit 1; }
+  [[ -z "$(git status --porcelain)" ]] || { echo "attempts mode needs a clean working tree (commit or stash first)"; exit 1; }
+  ATTEMPT_TIMEOUT="${ATTEMPT_TIMEOUT:-900}"
+  TASK="$TASK
+Acceptance: the script .claude/verify.sh must exit 0 — read it first and make its checks pass."
+  for i in $(seq 1 "$N"); do
+    echo "[attempts] === attempt $i/$N ==="
+    t0=$(date +%s)
+    timeout "$ATTEMPT_TIMEOUT" "$0" --dangerously-skip-permissions -p "$TASK" < /dev/null || true
+    echo "[attempts] attempt $i took $(( $(date +%s) - t0 ))s; verifying..."
+    if bash .claude/verify.sh; then
+      echo "[attempts] PASS on attempt $i — changes kept. Review with: git diff"
+      exit 0
+    fi
+    echo "[attempts] attempt $i failed verification — reverting"
+    git checkout -q -- . && git clean -qfd
+  done
+  echo "[attempts] all $N attempts failed verification; tree restored to clean state"
+  exit 1
+fi
+
+# ---- Bring the backend up ----------------------------------------------------
+if [[ "$LOCAL_BACKEND" == "ollama" ]]; then
+  # Legacy path: ollama serves /v1/messages too, but splits MoE models by whole
+  # layers, so expert weights end up in VRAM where they idle. Kept as a fallback.
+  OLLAMA_BIN="${OLLAMA_BIN:-$HOME/opt/ollama/bin/ollama}"
+  LOCAL_MODEL="${LOCAL_MODEL:-qwen3.5:35b}"
+  export OLLAMA_HOST="${OLLAMA_HOST:-127.0.0.1:11434}"
+  export OLLAMA_CONTEXT_LENGTH="${OLLAMA_CONTEXT_LENGTH:-49152}"
+  export OLLAMA_FLASH_ATTENTION=1
+  export OLLAMA_KV_CACHE_TYPE="${OLLAMA_KV_CACHE_TYPE:-q8_0}"
+  export OLLAMA_KEEP_ALIVE="${OLLAMA_KEEP_ALIVE:-2h}"
+  export OLLAMA_MAX_LOADED_MODELS=1
+  if ! curl -sf "http://$OLLAMA_HOST/api/version" >/dev/null 2>&1; then
+    echo "[local-claude] starting ollama server..." >&2
+    nohup "$OLLAMA_BIN" serve >>"$STATE_DIR/ollama.log" 2>&1 &
+    echo $! > "$STATE_DIR/ollama.pid"
+    for _ in $(seq 1 60); do curl -sf "http://$OLLAMA_HOST/api/version" >/dev/null 2>&1 && break; sleep 0.5; done
+  fi
+  "$OLLAMA_BIN" show "$LOCAL_MODEL" >/dev/null 2>&1 || "$OLLAMA_BIN" pull "$LOCAL_MODEL"
+  BASE_URL="http://$OLLAMA_HOST"
+  EFFECTIVE_CTX="$OLLAMA_CONTEXT_LENGTH"
+else
+  MODEL="$(pick_model)" || {
+    echo "[local-claude] no model in $MODELS_DIR. Fetch one with:" >&2
+    echo "  ./local-claude pull unsloth/Qwen3.6-35B-A3B-GGUF Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf" >&2
+    exit 1
+  }
+  # Restart if a different model than the running one was requested.
+  if llama_up && [[ -f "$STATE_DIR/model" ]] && [[ "$(cat "$STATE_DIR/model")" != "$MODEL" ]]; then
+    echo "[local-claude] switching model → $(basename "$MODEL")" >&2
+    stop_llama || true
+    sleep 2
+  fi
+  llama_up || start_llama "$MODEL"
+  LOCAL_MODEL="$(basename "$MODEL" .gguf)"
+  BASE_URL="http://$LOCAL_HOST:$LOCAL_PORT"
+  # Ask the server what it actually allocated rather than assuming LOCAL_CTX:
+  # an already-running server may have been started with a different context,
+  # and telling Claude Code a window larger than the real one means requests
+  # get rejected mid-session instead of compacted.
+  EFFECTIVE_CTX="$(curl -sf "$BASE_URL/props" 2>/dev/null \
+    | python3 -c "import sys,json;print(json.load(sys.stdin).get('default_generation_settings',{}).get('n_ctx',0))" 2>/dev/null || echo 0)"
+  [[ "${EFFECTIVE_CTX:-0}" -lt 8192 ]] && EFFECTIVE_CTX="${LOCAL_CTX:-131072}"
+fi
+
+# ---- Point Claude Code at the local backend ---------------------------------
+export ANTHROPIC_BASE_URL="$BASE_URL"
+export ANTHROPIC_AUTH_TOKEN="local"    # required by the client, ignored by the server
+export ANTHROPIC_API_KEY=""
+export ANTHROPIC_MODEL="$LOCAL_MODEL"
+export ANTHROPIC_DEFAULT_SONNET_MODEL="$LOCAL_MODEL"
+export ANTHROPIC_DEFAULT_OPUS_MODEL="$LOCAL_MODEL"
+export ANTHROPIC_DEFAULT_HAIKU_MODEL="$LOCAL_MODEL"
+export ANTHROPIC_SMALL_FAST_MODEL="$LOCAL_MODEL"   # background/summarization calls
+export CLAUDE_CODE_MAX_OUTPUT_TOKENS="${CLAUDE_CODE_MAX_OUTPUT_TOKENS:-8192}"
+export API_TIMEOUT_MS="${API_TIMEOUT_MS:-600000}"  # local prefill can be slow; don't abort requests
+
+# A local model is not in Claude Code's catalog, so it assumes a 200k window and
+# would let a session grow past what the server allocated before auto-compacting.
+# Tell it the truth instead, minus a margin for the background slot and the reply.
+export CLAUDE_CODE_MAX_CONTEXT_TOKENS="${CLAUDE_CODE_MAX_CONTEXT_TOKENS:-$(( EFFECTIVE_CTX - 8192 ))}"
+
+# ---- Keep everything on this machine ----------------------------------------
+export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1  # no telemetry/update/error pings
+export DISABLE_AUTOUPDATER=1
+export DISABLE_TELEMETRY=1
+export DISABLE_ERROR_REPORTING=1
+
+# Marks this session for hooks that only apply to the local stack
+export LOCAL_CLAUDE=1
+
+# Allow launching from inside another Claude Code session (e.g. for testing)
+unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT CLAUDE_CODE_SSE_PORT 2>/dev/null || true
+
+# ---- Small-model guardrails --------------------------------------------------
+# Injected into the system prompt: rules that compensate for a 35B-class model
+# (weak long-horizon planning, overconfident success claims). LOCAL_RULES="" disables.
+DEFAULT_RULES='IMPORTANT operating rules for this small local model:
+1. Restate the task as a short numbered plan before touching any file.
+2. Make the smallest change that satisfies the request; never refactor or reformat code you were not asked to change.
+3. After every change, verify it: run the file, the tests, or a syntax check. Never claim something works without having run it in this session.
+4. If the task is ambiguous or has no clear success criterion, ask one clarifying question before starting.
+5. Read only the specific files or line ranges you need; avoid broad exploration.
+6. If the same error occurs twice in a row, stop and report what you tried instead of retrying blindly.'
+LOCAL_RULES="${LOCAL_RULES-$DEFAULT_RULES}"
+
+EXTRA_ARGS=()
+
+# ---- Web search --------------------------------------------------------------
+# The built-in WebSearch/WebFetch run on Anthropic's servers, so they are dead
+# against a local backend. Instead we load a tiny local MCP server that provides
+# web_search + web_fetch (DuckDuckGo, keyless). On by default; LOCAL_SEARCH=0 off.
+SEARCH_MCP="${LOCAL_SEARCH_CONFIG:-$STATE_DIR/search-mcp.json}"
+if [[ "${LOCAL_SEARCH:-1}" != "0" ]] && [[ -f "$SEARCH_MCP" ]]; then
+  EXTRA_ARGS+=(--mcp-config "$SEARCH_MCP")
+  [[ -n "$LOCAL_RULES" ]] && LOCAL_RULES="$LOCAL_RULES
+7. You have web_search and web_fetch tools (from the \"search\" MCP server). Use web_search when you need current information, library docs, or facts not in the codebase, then web_fetch a result URL to read it. Do not claim you cannot access the internet."
+fi
+
+[[ -n "$LOCAL_RULES" ]] && EXTRA_ARGS+=(--append-system-prompt "$LOCAL_RULES")
+# Keep the context window lean: only the MCP servers we pass explicitly
+# (i.e. the search server), never project/user-discovered ones — unless opted in.
+[[ "${LOCAL_MCP:-0}" != "1" ]] && EXTRA_ARGS+=(--strict-mcp-config)
+
+exec claude --model "$LOCAL_MODEL" "${EXTRA_ARGS[@]}" "$@"
