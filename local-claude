@@ -347,17 +347,31 @@ start_llama() {
 }
 
 stop_llama() {
-  local stopped=1 pid
+  local stopped=1 pid pids=()
   if [[ -f "$STATE_DIR/llama.pid" ]] && kill -0 "$(cat "$STATE_DIR/llama.pid")" 2>/dev/null; then
-    kill "$(cat "$STATE_DIR/llama.pid")" && stopped=0
+    pids=("$(cat "$STATE_DIR/llama.pid")")
   else
     # Deliberately not `pkill -f`: that pattern also matches the command line of
     # whatever shell invoked us, and killing the caller is a memorable bug.
     for pid in $(pgrep -f "llama-server --model" 2>/dev/null); do
       [[ "$pid" == "$$" || "$pid" == "$PPID" ]] && continue
-      kill "$pid" 2>/dev/null && stopped=0
+      pids+=("$pid")
     done
   fi
+  for pid in "${pids[@]:-}"; do
+    [[ -n "$pid" ]] && kill "$pid" 2>/dev/null && stopped=0
+  done
+  # Wait for them to actually go. A terminating server still owns its VRAM, and
+  # the next one needs several gigabytes of it — starting too soon fails with
+  # "unable to allocate buffer", which looks like a tuning problem and is not.
+  for pid in "${pids[@]:-}"; do
+    [[ -n "$pid" ]] || continue
+    for _ in $(seq 1 "${LOCAL_STOP_TIMEOUT:-60}"); do
+      kill -0 "$pid" 2>/dev/null || break
+      sleep 0.5
+    done
+    kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null || true
+  done
   rm -f "$STATE_DIR/llama.pid" "$STATE_DIR/model"
   return $stopped
 }
