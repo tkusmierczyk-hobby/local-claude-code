@@ -465,8 +465,15 @@ export ANTHROPIC_DEFAULT_SONNET_MODEL="$LOCAL_MODEL"
 export ANTHROPIC_DEFAULT_OPUS_MODEL="$LOCAL_MODEL"
 export ANTHROPIC_DEFAULT_HAIKU_MODEL="$LOCAL_MODEL"
 export ANTHROPIC_SMALL_FAST_MODEL="$LOCAL_MODEL"   # background/summarization calls
-export CLAUDE_CODE_MAX_OUTPUT_TOKENS="${CLAUDE_CODE_MAX_OUTPUT_TOKENS:-8192}"
-export API_TIMEOUT_MS="${API_TIMEOUT_MS:-600000}"  # local prefill can be slow; don't abort requests
+# 8192 is too low for a model that writes files: a single Write of a long document
+# is one JSON string, and running out of budget mid-string truncates the tool call
+# into invalid JSON ("InputValidationError: could not be parsed as JSON"). Thinking
+# tokens come out of this same budget, so leave real headroom. Qwen3.6 recommends
+# at least 32k of output for complex work.
+export CLAUDE_CODE_MAX_OUTPUT_TOKENS="${CLAUDE_CODE_MAX_OUTPUT_TOKENS:-32768}"
+# Must exceed the worst-case generation: 32k output tokens at ~30 tok/s is ~18
+# minutes, and a 10-minute timeout would abort a legitimate long write.
+export API_TIMEOUT_MS="${API_TIMEOUT_MS:-1800000}"
 
 # A local model is not in Claude Code's catalog, so it assumes a 200k window and
 # would let a session grow past what the server allocated before auto-compacting.
@@ -494,7 +501,8 @@ DEFAULT_RULES='IMPORTANT operating rules for this small local model:
 3. After every change, verify it: run the file, the tests, or a syntax check. Never claim something works without having run it in this session.
 4. If the task is ambiguous or has no clear success criterion, ask one clarifying question before starting.
 5. Read only the specific files or line ranges you need; avoid broad exploration.
-6. If the same error occurs twice in a row, stop and report what you tried instead of retrying blindly.'
+6. If the same error occurs twice in a row, stop and report what you tried instead of retrying blindly.
+7. Write long files in pieces: create the file with the first section, then append the rest with further edits. A single Write of more than ~300 lines risks being cut off mid-call and failing.'
 LOCAL_RULES="${LOCAL_RULES-$DEFAULT_RULES}"
 
 EXTRA_ARGS=()
@@ -507,7 +515,7 @@ SEARCH_MCP="${LOCAL_SEARCH_CONFIG:-$STATE_DIR/search-mcp.json}"
 if [[ "${LOCAL_SEARCH:-1}" != "0" ]] && [[ -f "$SEARCH_MCP" ]]; then
   EXTRA_ARGS+=(--mcp-config "$SEARCH_MCP")
   [[ -n "$LOCAL_RULES" ]] && LOCAL_RULES="$LOCAL_RULES
-7. You have web_search and web_fetch tools (from the \"search\" MCP server). Use web_search when you need current information, library docs, or facts not in the codebase, then web_fetch a result URL to read it. Do not claim you cannot access the internet."
+8. You have web_search and web_fetch tools (from the \"search\" MCP server). Use web_search when you need current information, library docs, or facts not in the codebase, then web_fetch a result URL to read it. Do not claim you cannot access the internet."
 fi
 
 [[ -n "$LOCAL_RULES" ]] && EXTRA_ARGS+=(--append-system-prompt "$LOCAL_RULES")

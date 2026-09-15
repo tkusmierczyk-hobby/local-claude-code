@@ -48,6 +48,33 @@ small, the whole budget goes to the `thinking` block and no text comes out. Rais
 LOCAL_THINKING=0 local-claude
 ```
 
+## "Error writing file" / InputValidationError: could not be parsed as JSON
+
+The model was cut off mid-tool-call. A `Write` of a long document is a single JSON
+string; when the output budget runs out partway through it, the call arrives with
+an unterminated string and Claude Code cannot parse it. The giveaway is a failed
+call whose size is suspiciously close to your token cap — 32 KB of prose is about
+8k tokens.
+
+Two things cause it, and the launcher now handles both:
+
+- **The cap was too low.** `CLAUDE_CODE_MAX_OUTPUT_TOKENS` defaults to 32768 here,
+  not Claude Code's smaller default. Thinking tokens come out of the *same* budget,
+  so leave headroom.
+- **The model wrote too much at once.** The injected rules tell it to create a file
+  with the first section and append the rest, rather than emitting hundreds of
+  lines in one call.
+
+If you still hit it, raise the cap further or disable reasoning for that task:
+
+```bash
+CLAUDE_CODE_MAX_OUTPUT_TOKENS=65536 local-claude
+LOCAL_THINKING=0 local-claude        # frees the whole budget for output
+```
+
+Note that a long generation is genuinely slow — 32k tokens at 30 tok/s is ~18
+minutes — so `API_TIMEOUT_MS` must stay large enough not to abort it.
+
 ## The session overflows or "autocompact is thrashing"
 
 Claude Code assumes a 200k window for any model it does not recognise. The
