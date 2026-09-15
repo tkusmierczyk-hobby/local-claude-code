@@ -88,6 +88,18 @@ long session rather than the client shrinking it.
 
 On the reference machine, decode sits ~10% below an ollama CUDA stack and prefill
 trails it (621 vs ~1060 tok/s at matched prompt size). That gap is Vulkan versus
-CUDA. Closing it means building llama.cpp with a CUDA toolkit and pointing
-`LLAMA_DIR` at the result. Given that one micro-batch flag was worth 2.8×, it is
-worth measuring rather than assuming.
+CUDA.
+
+`bin/build-cuda.sh` builds the CUDA variant and installs it *alongside* the
+Vulkan one, so you can measure both on your own hardware before choosing:
+
+```bash
+./bin/build-cuda.sh
+LLAMA_DIR=~/.local/share/local-claude/<build>-cuda local-claude bench --tune
+local-claude bench --tune        # the Vulkan build, for comparison
+```
+
+Re-tune after switching: the best expert split is a property of the kernels as
+much as the card. See [INSTALL.md](INSTALL.md#platforms) for what `nvcc` actually
+requires — "CUDA is installed" usually means the driver and runtime, not the
+compiler.

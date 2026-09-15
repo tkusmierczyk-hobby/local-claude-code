@@ -40,13 +40,40 @@ Environment overrides: `LOCAL_CLAUDE_PREFIX`, `LOCAL_CLAUDE_STATE`, `MODELS_DIR`
 | Linux arm64 | CPU | supported, untested |
 | macOS arm64 | Metal | supported, untested — unified memory means VRAM sizing differs |
 
-**NVIDIA users:** the installer chooses Vulkan deliberately. llama.cpp publishes
-no Linux CUDA binaries, and building from source needs a multi-gigabyte toolkit.
-Vulkan reaches the same matrix cores with nothing installed. If you already have
-CUDA and want the extra speed, build llama.cpp yourself and point the stack at it:
+**NVIDIA users:** the installer chooses Vulkan deliberately, because llama.cpp
+publishes no Linux CUDA binaries and Vulkan reaches the same matrix cores with
+nothing installed. A CUDA build may still be faster — `bin/build-cuda.sh` does it:
 
 ```bash
-LLAMA_DIR=/path/to/your/llama.cpp/build/bin local-claude
+./bin/build-cuda.sh          # builds and installs alongside; switches nothing
+```
+
+It needs `nvcc`, and this is the part that surprises people: **having "CUDA
+installed" usually is not enough.** The NVIDIA driver gives you `libcuda` and
+makes `nvidia-smi` report a CUDA version; PyTorch's pip wheels give you `cudart`
+and `cuBLAS` with headers. Neither provides the offline compiler. Check with
+`command -v nvcc` — if it is missing, install just the compiler rather than a
+whole toolkit:
+
+```bash
+conda create -y -p ~/.local/share/local-claude/cudaenv -c conda-forge \
+  cuda-nvcc cuda-cudart-dev cuda-cccl
+```
+
+(The PyPI `nvidia-cuda-nvcc-cu12` wheel is *not* sufficient — it ships `ptxas`
+and `libnvvm` for runtime JIT, but not the `nvcc` driver binary.)
+
+The script installs to `<prefix>/<build>-cuda` next to the Vulkan build and tells
+you how to benchmark both. Adopt it only if it wins on your hardware:
+
+```bash
+ln -sfn ~/.local/share/local-claude/<build>-cuda ~/.local/share/local-claude/current
+```
+
+Already have a llama.cpp build of your own? Just point at it:
+
+```bash
+LLAMA_DIR=/path/to/llama.cpp/build/bin local-claude
 ```
 
 ## Picking a llama.cpp build
