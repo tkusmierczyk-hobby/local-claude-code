@@ -89,12 +89,37 @@ often halves throughput (that was the limiter here), and a smaller quantisation
 from the table above may be the better trade. The transfer is resumable either
 way, so starting it and deciding later costs nothing.
 
-Optional vision support (Claude Code can paste screenshots):
+## Vision
+
+Qwen3.6-35B-A3B is multimodal, but the vision tower ships as a separate
+**mmproj** file — without it the model is text-only. Claude Code sends images
+when you paste a screenshot or `Read` an image file, so it is worth having.
 
 ```bash
-./local-claude pull unsloth/Qwen3.6-35B-A3B-GGUF mmproj-F16.gguf     # 0.9 GB
-LOCAL_MMPROJ=~/models/mmproj-F16.gguf ./local-claude
+local-claude pull unsloth/Qwen3.6-35B-A3B-GGUF mmproj-F16.gguf \
+  8971ee4f331ff0a4c609374f32984b3d4e6dc086c0aa35f1d637fad1829e887f
 ```
+
+0.90 GB. Once it is in `~/models`, the launcher finds it automatically — there is
+nothing to configure. `local-claude status` and the startup line show `+vision`
+when it is active. With more than one mmproj present the launcher cannot tell
+which model each belongs to, so set `LOCAL_MMPROJ` explicitly.
+
+Three things worth knowing:
+
+- **The projector runs on the CPU by default here.** It wants ~1 GB of VRAM,
+  which is exactly what the expert layers are competing for, and an image is
+  encoded once per message rather than per token — so the GPU is the wrong place
+  for it on a card this size. `LOCAL_MMPROJ_DEVICE=gpu` overrides that if you
+  have headroom.
+- **Images cost context.** Each one becomes hundreds to thousands of tokens.
+  `--image-min-tokens` / `--image-max-tokens` bound that; pass them through
+  `LOCAL_LLAMA_ARGS` if you need to.
+- **F16 is the one to take.** BF16 is the same size with no advantage here, and
+  F32 doubles the file for precision the vision tower does not need.
+
+If you would rather stay text-only, simply do not download it — or move it out of
+`~/models`.
 
 ## Switching models
 

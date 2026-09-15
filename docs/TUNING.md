@@ -65,6 +65,8 @@ headroom, and re-check after changing the split.
 | `LOCAL_THREADS` | physical cores, capped at 16 | Memory bandwidth saturates around 8 threads; more rarely helps |
 | `LOCAL_THINKING` | 1 | `0` disables chain-of-thought — much faster turns, worse reasoning |
 | `LOCAL_MODEL_FILE` | best in `~/models` | Pick a model explicitly |
+| `LOCAL_MMPROJ` | auto-detected | Vision projector; see MODELS.md |
+| `LOCAL_MMPROJ_DEVICE` | `cpu` | `gpu` offloads the vision tower, costing ~1 GB of VRAM the experts want |
 | `LOCAL_DEVICE` | autodetected | Force a GPU; never the integrated one |
 | `LOCAL_TEMPLATE` | auto-patched | `0` uses the model's stock chat template — see DESIGN-NOTES |
 | `LOCAL_SEARCH` | 1 | `0` drops the web-search MCP server |

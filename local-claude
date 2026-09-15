@@ -29,6 +29,7 @@
 #   LOCAL_MODEL_FILE=~/models/x.gguf   pick a model explicitly (default: best in MODELS_DIR)
 #   LOCAL_CTX=65536                    context window
 #   LOCAL_NCMOE=34                     expert layers kept in RAM (default: tuned value)
+#   LOCAL_MMPROJ=~/models/mmproj-F16.gguf   enable vision (auto-detected if unambiguous)
 #   LOCAL_THINKING=0                   disable chain-of-thought (much faster turns)
 #   LOCAL_TEMPLATE=0                   use the model's stock chat template (see docs)
 #   LOCAL_BACKEND=ollama               fall back to the old ollama backend
@@ -246,6 +247,7 @@ model_expert_count() {
 
 start_llama() {
   local model="$1"
+  local VISION_NOTE=""
   local ctx="${LOCAL_CTX:-131072}"
   local ncmoe="${LOCAL_NCMOE:-$(default_ncmoe "$model")}"
   local dev="${LOCAL_DEVICE:-$(detect_device)}"
@@ -303,10 +305,32 @@ start_llama() {
   # LOCAL_THINKING=0 turns it off via the model's own template switch.
   [[ "${LOCAL_THINKING:-1}" == "0" ]] && args+=(--chat-template-kwargs '{"enable_thinking":false}')
   [[ -n "$dev" ]] && args+=(--device "$dev")
-  [[ -n "${LOCAL_MMPROJ:-}" ]] && args+=(--mmproj "$LOCAL_MMPROJ")
+  # Vision. Qwen3.6-35B-A3B is multimodal, but the vision tower ships as a
+  # separate "mmproj" file, so images only work once one is present. An explicit
+  # LOCAL_MMPROJ wins; otherwise pick one up automatically if exactly one is in
+  # the models directory (more than one and we cannot tell which model it belongs
+  # to, so we stay out of it).
+  local mmproj="${LOCAL_MMPROJ:-}"
+  if [[ -z "$mmproj" ]]; then
+    local found=()
+    for f in "$MODELS_DIR"/mmproj*.gguf; do [[ -f "$f" ]] && found+=("$f"); done
+    if [[ ${#found[@]} -eq 1 ]]; then
+      mmproj="${found[0]}"
+    elif [[ ${#found[@]} -gt 1 ]]; then
+      echo "[local-claude] several mmproj files in $MODELS_DIR — set LOCAL_MMPROJ to choose" >&2
+    fi
+  fi
+  if [[ -n "$mmproj" && -f "$mmproj" ]]; then
+    args+=(--mmproj "$mmproj")
+    # The projector wants ~1 GB of VRAM — exactly what the expert layers are
+    # competing for. An image is encoded once per message, not per token, so the
+    # CPU is the cheaper place for it unless you have headroom to spare.
+    [[ "${LOCAL_MMPROJ_DEVICE:-cpu}" == "cpu" ]] && args+=(--no-mmproj-offload)
+    VISION_NOTE=" +vision($(basename "$mmproj"))"
+  fi
   [[ -n "${LOCAL_LLAMA_ARGS:-}" ]] && args+=(${LOCAL_LLAMA_ARGS})
 
-  echo "[local-claude] starting llama-server: $(basename "$model") ctx=$ctx (${slots} slots, shared) ncmoe=$ncmoe dev=${dev:-auto}" >&2
+  echo "[local-claude] starting llama-server: $(basename "$model") ctx=$ctx (${slots} slots, shared) ncmoe=$ncmoe dev=${dev:-auto}${VISION_NOTE:-}" >&2
   LD_LIBRARY_PATH="$LLAMA_DIR" nohup "$LLAMA_DIR/llama-server" "${args[@]}" \
     >>"$STATE_DIR/llama-server.log" 2>&1 &
   echo $! > "$STATE_DIR/llama.pid"

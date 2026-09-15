@@ -107,6 +107,18 @@ it to 512, which assumes a GPU-resident model; when the experts live on the CPU,
 larger micro-batch amortises their matrix multiplies far better. `install.sh` sets
 it from your VRAM.
 
+## Vision
+
+The recommended model is multimodal. Fetch the 0.9 GB projector and the launcher
+picks it up automatically — screenshots and image files then work in Claude Code:
+
+```bash
+local-claude pull unsloth/Qwen3.6-35B-A3B-GGUF mmproj-F16.gguf \
+  8971ee4f331ff0a4c609374f32984b3d4e6dc086c0aa35f1d637fad1829e887f
+```
+
+Details and the VRAM trade-off: [docs/MODELS.md](docs/MODELS.md#vision).
+
 ## Tests
 
 ```bash
