@@ -84,22 +84,31 @@ Do not shrink the window to buy expert layers without checking: Claude Code will
 not auto-compact below 100k tokens, so a smaller pool means the server rejects a
 long session rather than the client shrinking it.
 
-## Still on the table
+## Backend: CUDA vs Vulkan
 
-On the reference machine, decode sits ~10% below an ollama CUDA stack and prefill
-trails it (621 vs ~1060 tok/s at matched prompt size). That gap is Vulkan versus
-CUDA.
+`install.sh` picks Vulkan for NVIDIA because llama.cpp ships no Linux CUDA binary
+and Vulkan needs nothing installed. A source-built CUDA backend is faster, though.
+Measured on the reference machine, same model, same split, same micro-batch, same
+9537-token prompt:
 
-`bin/build-cuda.sh` builds the CUDA variant and installs it *alongside* the
-Vulkan one, so you can measure both on your own hardware before choosing:
+| | Vulkan | CUDA |
+|---|---|---|
+| prefill | 590.7 tok/s | **690.3** |
+| decode | 28.5 tok/s | **35.0** |
+| VRAM at `--n-cpu-moe 34` | 7420 MiB | 7744 MiB |
+| agentic end-to-end | 60 s | **40 s** |
+
+On longer prompts the gap widens: 1143 tok/s prefill on a 14k-token prompt against
+761 for Vulkan. CUDA also needs slightly more VRAM for the same split, so re-tune
+after switching — and note that the tuned value and the device name are both
+cached **per build**, because the same card is `Vulkan1` under one backend and
+`CUDA0` under the other.
 
 ```bash
-./bin/build-cuda.sh
+./bin/build-cuda.sh              # installs alongside, switches nothing
 LLAMA_DIR=~/.local/share/local-claude/<build>-cuda local-claude bench --tune
-local-claude bench --tune        # the Vulkan build, for comparison
+ln -sfn ~/.local/share/local-claude/<build>-cuda ~/.local/share/local-claude/current
 ```
 
-Re-tune after switching: the best expert split is a property of the kernels as
-much as the card. See [INSTALL.md](INSTALL.md#platforms) for what `nvcc` actually
-requires — "CUDA is installed" usually means the driver and runtime, not the
-compiler.
+Getting `nvcc` is the only hard part, and "CUDA is installed" usually does not
+mean you have it — see [INSTALL.md](INSTALL.md#platforms).

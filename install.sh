@@ -168,6 +168,13 @@ fi
 say "6/6  Verifying"
 "$HERE/test/preflight.sh" || die "preflight failed — see the messages above"
 
+if [ "$HW_BACKEND" = vulkan ] && [ "$HW_GPU_NAME" != "${HW_GPU_NAME#NVIDIA}" ]; then
+  say "Optional: a CUDA build is faster"
+  info "Vulkan needs nothing installed, which is why it is the default. On the"
+  info "reference machine a source-built CUDA backend was worth ~20% decode and"
+  info "~50% prefill. If you can get nvcc:  ./bin/build-cuda.sh   (see docs/INSTALL.md)"
+fi
+
 say "Done. Next: choose a model."
 case "$REC_TIER" in
   full)

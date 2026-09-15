@@ -103,23 +103,53 @@ else
   rm -rf "$STITCH"; mkdir -p "$STITCH/bin" "$STITCH/include" "$STITCH/lib64"
   cp -a "$(dirname "$NVCC")/." "$STITCH/bin/" 2>/dev/null || true
   [ -d "$TK/nvvm" ] && cp -a "$TK/nvvm" "$STITCH/" 2>/dev/null || true
-  PYSP="$(python3 -c 'import site;print(site.getsitepackages()[0])' 2>/dev/null || echo /nonexistent)"
-  for d in "$TK/include" "$TK/targets/x86_64-linux/include" \
-           "$PYSP"/nvidia/*/include; do
+  # nvcc also needs its own targets/ tree, where the conda package keeps headers
+  for d in "$TK/targets/x86_64-linux/include" "$TK/targets/x86_64-linux/lib"; do
+    [ -d "$d" ] || continue
+    case "$d" in *include) cp -asn "$d/." "$STITCH/include/" 2>/dev/null || true ;;
+                  *lib)     cp -asn "$d/." "$STITCH/lib64/"   2>/dev/null || true ;; esac
+  done
+  # cudart and cuBLAS usually come from PyTorch's pip wheels. Ask several pythons
+  # where those live: PATH here may point at a build-only interpreter (the conda
+  # env we just made) whose site-packages has no nvidia/ at all.
+  PYSPS=()
+  for py in "$HOME/anaconda3/bin/python3" /usr/bin/python3 python3; do
+    command -v "$py" >/dev/null 2>&1 || continue
+    sp="$("$py" -c 'import site;print(site.getsitepackages()[0])' 2>/dev/null)" || continue
+    [ -d "$sp/nvidia" ] && PYSPS+=("$sp")
+  done
+  [ ${#PYSPS[@]} -gt 0 ] && info "cuda libs from ${PYSPS[0]}/nvidia" || true
+
+  for d in "$TK/include" "$TK/targets/x86_64-linux/include"; do
     [ -d "$d" ] && cp -asn "$d/." "$STITCH/include/" 2>/dev/null || true
   done
-  for d in "$TK/lib64" "$TK/lib" "$TK/targets/x86_64-linux/lib" "$PYSP"/nvidia/*/lib; do
+  for d in "$TK/lib64" "$TK/lib" "$TK/targets/x86_64-linux/lib"; do
     [ -d "$d" ] && cp -asn "$d/." "$STITCH/lib64/" 2>/dev/null || true
   done
-  # Linking wants the unversioned names; the system only ships versioned ones.
-  for base in libcudart libcublas libcublasLt; do
-    f="$(ls "$STITCH"/lib64/$base.so.* 2>/dev/null | head -1)"
-    [ -n "$f" ] && ln -sf "$(basename "$f")" "$STITCH/lib64/$base.so"
+  for sp in "${PYSPS[@]:-}"; do
+    [ -n "$sp" ] || continue
+    for d in "$sp"/nvidia/*/include; do
+      [ -d "$d" ] && cp -asn "$d/." "$STITCH/include/" 2>/dev/null || true
+    done
+    for d in "$sp"/nvidia/*/lib; do
+      [ -d "$d" ] && cp -asn "$d/." "$STITCH/lib64/" 2>/dev/null || true
+    done
   done
-  drv="$(ls /usr/lib/x86_64-linux-gnu/libcuda.so.1 /usr/lib64/libcuda.so.1 2>/dev/null | head -1)"
-  [ -n "$drv" ] && ln -sf "$drv" "$STITCH/lib64/libcuda.so"
+  # Linking wants the unversioned names; the system only ships versioned ones.
+  # Note the trailing `|| true` on each: under `set -e`, a bare `[ ... ] && cmd`
+  # that tests false is a failing last command and would abort the script with no
+  # message at all.
+  for base in libcudart libcublas libcublasLt; do
+    f="$(ls "$STITCH"/lib64/$base.so.* 2>/dev/null | head -1)" || true
+    [ -n "$f" ] && ln -sf "$(basename "$f")" "$STITCH/lib64/$base.so" || true
+  done
+  for drv in /usr/lib/x86_64-linux-gnu/libcuda.so.1 /usr/lib64/libcuda.so.1; do
+    [ -e "$drv" ] && { ln -sf "$drv" "$STITCH/lib64/libcuda.so"; break; } || true
+  done
   [ -e "$STITCH/include/cuda_runtime.h" ] || die "still no cuda_runtime.h — install cuda-cudart-dev"
   [ -d "$STITCH/include/cub" ] || die "no CUB headers — install cuda-cccl"
+  ls "$STITCH"/lib64/libcublas.so* >/dev/null 2>&1 \
+    || die "no cuBLAS library found. It usually arrives with PyTorch (pip install nvidia-cublas-cu12), or via conda's libcublas-dev"
   TK="$STITCH"
 fi
 info "toolkit   $TK"
@@ -127,13 +157,19 @@ info "toolkit   $TK"
 # ---- 4. build ----------------------------------------------------------------
 say "4/5  Building (this takes a while; $JOBS jobs)"
 BUILD_DIR="$SRC/build-cuda"
+rm -rf "$BUILD_DIR/CMakeCache.txt" "$BUILD_DIR/CMakeFiles"   # stale cache keeps old paths
 cmake -S "$SRC" -B "$BUILD_DIR" -G Ninja \
   -DCMAKE_BUILD_TYPE=Release \
   -DGGML_CUDA=ON \
   -DCMAKE_CUDA_COMPILER="$NVCC" \
   -DCMAKE_CUDA_ARCHITECTURES="$ARCH" \
   -DCUDAToolkit_ROOT="$TK" \
+  -DCUDAToolkit_INCLUDE_DIR="$TK/include" \
   -DCMAKE_LIBRARY_PATH="$TK/lib64" \
+  -DCMAKE_INCLUDE_PATH="$TK/include" \
+  -DCMAKE_CUDA_FLAGS="-I$TK/include" \
+  -DCMAKE_C_FLAGS="-I$TK/include" \
+  -DCMAKE_CXX_FLAGS="-I$TK/include" \
   -DLLAMA_BUILD_TESTS=OFF \
   -DLLAMA_BUILD_EXAMPLES=OFF \
   -DLLAMA_CURL=OFF \

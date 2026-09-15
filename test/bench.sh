@@ -108,6 +108,8 @@ done
 
 echo
 if [[ "$TUNE" == "1" && -n "$best_n" ]]; then
+  # keyed by build: backends have different VRAM footprints for the same model
+  echo "$best_n" > "$STATE_DIR/ncmoe.$(basename "$(readlink -f "$LLAMA_DIR" 2>/dev/null || echo "$LLAMA_DIR")")"
   echo "$best_n" > "$STATE_DIR/ncmoe"
   echo "tuned: --n-cpu-moe $best_n ($best_tg tok/s decode) -> $STATE_DIR/ncmoe"
   echo "the launcher picks this up on the next start"

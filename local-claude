@@ -217,19 +217,31 @@ llama_up() { curl -sf "http://$LOCAL_HOST:$LOCAL_PORT/health" >/dev/null 2>&1; }
 # slower than the discrete card, so the discrete one is selected explicitly
 # rather than left to auto-detection.
 detect_device() {
-  [[ -s "$STATE_DIR/device" ]] && { cat "$STATE_DIR/device"; return; }
+  # Cache per build: device names are backend-specific (the same card is Vulkan1
+  # under Vulkan and CUDA0 under CUDA), so one shared cache feeds the wrong name
+  # to whichever build you switch to second.
+  local cache="$STATE_DIR/device.$(basename "$(readlink -f "$LLAMA_DIR" 2>/dev/null || echo "$LLAMA_DIR")")"
+  [[ -s "$cache" ]] && { cat "$cache"; return; }
   local dev
   dev="$(LD_LIBRARY_PATH="$LLAMA_DIR" "$LLAMA_DIR/llama-server" --list-devices 2>/dev/null \
-        | awk -F: '/NVIDIA|Radeon RX|Arc/ {gsub(/ /,"",$1); print $1; exit}')"
-  [[ -n "$dev" ]] && echo "$dev" > "$STATE_DIR/device"
+        | awk -F: '/NVIDIA|Radeon RX|Arc|Apple/ {gsub(/ /,"",$1); print $1; exit}')"
+  [[ -n "$dev" ]] && echo "$dev" > "$cache"
   echo "$dev"
 }
 
 # --n-cpu-moe N keeps the experts of the first N layers in RAM. Lower N = more
 # expert weights on the GPU = faster, until VRAM overflows and it collapses.
 # `local-claude bench --tune` writes the measured best value here.
+# The tuned split belongs to a build, not a machine: backends differ in how much
+# VRAM they need for the same model, so a value measured under one can fail to
+# allocate under another.
+ncmoe_cache() {
+  echo "$STATE_DIR/ncmoe.$(basename "$(readlink -f "$LLAMA_DIR" 2>/dev/null || echo "$LLAMA_DIR")")"
+}
+
 default_ncmoe() {
-  [[ -s "$STATE_DIR/ncmoe" ]] && { cat "$STATE_DIR/ncmoe"; return; }
+  [[ -s "$(ncmoe_cache)" ]] && { cat "$(ncmoe_cache)"; return; }
+  [[ -s "$STATE_DIR/ncmoe" ]] && { cat "$STATE_DIR/ncmoe"; return; }   # pre-split layout
   # Until `bench --tune` has measured this machine, keep every expert in RAM:
   # that always starts, whatever the GPU. The model's own layer count is the
   # right "all of them" value, so read it rather than assuming one.
@@ -405,7 +417,7 @@ if [[ "${1:-}" == "status" ]]; then
     echo "server:   down"
     echo "model:    $(pick_model 2>/dev/null || echo 'none found — run: local-claude pull ...')"
   fi
-  echo "n-cpu-moe: ${LOCAL_NCMOE:-$(default_ncmoe)}$([[ -s "$STATE_DIR/ncmoe" ]] && echo ' (tuned)' || echo ' (default — run: local-claude bench --tune)')"
+  echo "n-cpu-moe: ${LOCAL_NCMOE:-$(default_ncmoe)}$([[ -s "$(ncmoe_cache)" || -s "$STATE_DIR/ncmoe" ]] && echo ' (tuned)' || echo ' (default — run: local-claude bench --tune)')"
   echo "device:   ${LOCAL_DEVICE:-$(detect_device)}"
   nvidia-smi --query-gpu=name,memory.used,memory.total --format=csv,noheader 2>/dev/null | sed 's/^/gpu:      /'
   free -g | awk '/^Mem:/ {printf "ram:      %d GB used / %d GB total\n", $3, $2}'

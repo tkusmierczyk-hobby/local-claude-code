@@ -89,23 +89,29 @@ The full argument, with the arithmetic and where it turned out to be wrong, is i
 
 ## Measured
 
-Reference machine: RTX 4060 Laptop (8 GB), i9-13900HX, 31 GB RAM, Vulkan backend,
+Reference machine: RTX 4060 Laptop (8 GB), i9-13900HX, 31 GB RAM,
 Qwen3.6-35B-A3B UD-Q4_K_XL at `--n-cpu-moe 34 --ubatch-size 2048 --ctx-size 131072`.
 
-| | |
-|---|---|
-| Agentic task end to end | **60 s** (write a file, run it, self-correct, report) |
-| Decode | 28.7 tok/s |
-| Prefill | 760.7 tok/s on a 14k-token prompt |
-| Context | 131,072 tokens |
-| VRAM | 7396 MiB of 8188 |
-| API conformance | 7/7 |
+| | CUDA build | Vulkan build |
+|---|---|---|
+| Agentic task end to end | **40 s** | 60 s |
+| Decode | **34.6 tok/s** | 28.7 tok/s |
+| Prefill, 14k-token prompt | **1143 tok/s** | 761 tok/s |
+| Context | 131,072 | 131,072 |
+| VRAM | 7744 MiB of 8188 | 7420 MiB |
+| API conformance | 7/7 | 7/7 |
 
-**If you take one number from this page, take this one:** `--ubatch-size` was
-worth **2.8× prefill** (232 → 648 tok/s) at no cost to decode. llama.cpp defaults
-it to 512, which assumes a GPU-resident model; when the experts live on the CPU, a
-larger micro-batch amortises their matrix multiplies far better. `install.sh` sets
-it from your VRAM.
+Both run the same model at the same split; the difference is the backend. CUDA is
+worth ~20% of decode and ~50% of prefill here, but it is a source build — see
+[docs/INSTALL.md](docs/INSTALL.md#platforms). Vulkan needs nothing installed and
+is what `install.sh` sets up by default.
+
+**Two flags did most of the work, and the famous one was not the bigger.**
+`--n-cpu-moe` is the strategy — without it, none of this runs at a usable speed.
+But `--ubatch-size` was worth **2.8× prefill** (232 → 648 tok/s) at no cost to
+decode: llama.cpp defaults it to 512, which assumes a GPU-resident model, and with
+the experts on the CPU a larger micro-batch amortises their matrix multiplies far
+better. `install.sh` sets it from your VRAM.
 
 ## Vision
 

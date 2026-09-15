@@ -184,15 +184,15 @@ In production (`--n-cpu-moe 34 --ubatch-size 2048 --ctx-size 131072`): prefill
 API conformance 7/7, and the agentic end-to-end test passing in **60 s** against
 the previous stack's 76 s.
 
-## Still on the table
+## Backend, revisited
 
-Decode is ~10% below the old ollama stack and prefill has not caught up with it
-(621 tok/s against ~1060 at the same 1.4k prompt size). The difference is CUDA
-versus this Vulkan build — llama.cpp ships no Linux CUDA binary, so closing it
-means installing a toolkit and building from source. That is the next experiment,
-and it is worth roughly what the `--ubatch-size` fix was worth.
+This document previously listed the Vulkan-versus-CUDA gap as an open question,
+on the grounds that it was worth measuring rather than assuming. It was measured:
+a source-built CUDA backend gives **+23% decode and +17% prefill** at the same
+split, and the agentic end-to-end test drops from 60 s to 40 s. Decode at 34.6
+tok/s now exceeds the old whole-layer ollama stack's 32.1, while running a newer
+model at 2.7x the context.
 
-## Source
-
-The technique write-up that prompted this rebuild:
-<https://www.xda-developers.com/old-gpus-are-finally-practical-for-home-server-ai/>
+The placement argument is unaffected — both backends want the same split, and the
+expert offload is what makes either of them viable. See [TUNING.md](TUNING.md) for
+the numbers and `bin/build-cuda.sh` for the build.
