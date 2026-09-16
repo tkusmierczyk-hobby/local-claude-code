@@ -179,10 +179,18 @@ argument that makes prefill compute-bound in the first place, applied to the CPU
 side. Above 2048 the compute buffers no longer fit in what the expert layers left
 behind, which is the trade-off to re-check on a card with more VRAM.
 
-In production (`--n-cpu-moe 34 --ubatch-size 2048 --ctx-size 131072`): prefill
-**760.7 tok/s** on a 14k-token prompt, decode **28.7 tok/s**, 7396 MiB of VRAM,
-API conformance 7/7, and the agentic end-to-end test passing in **60 s** against
-the previous stack's 76 s.
+In production (`--n-cpu-moe 34 --ubatch-size 2048 --ctx-size 131072`), on a
+14k-token prompt:
+
+| | Vulkan | CUDA |
+|---|---|---|
+| prefill | 760.7 tok/s | **1143 tok/s** |
+| decode | 28.7 tok/s | **34.6 tok/s** |
+| VRAM | 7396 MiB | 7744 MiB |
+| agentic end-to-end | 60 s | **40 s** |
+
+API conformance is 7/7 on both, against the previous whole-layer stack's 76 s and
+32.1 tok/s.
 
 ## Backend, revisited
 

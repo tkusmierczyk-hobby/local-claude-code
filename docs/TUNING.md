@@ -59,7 +59,7 @@ headroom, and re-check after changing the split.
 |---|---|---|
 | `LOCAL_CTX` | from VRAM (131072 on 8 GB) | Must exceed 100k, or Claude Code overruns the server before it auto-compacts |
 | `LOCAL_NCMOE` | tuned value | Override the sweep |
-| `LOCAL_UBATCH` | from VRAM | See above |
+| `LOCAL_UBATCH` | from VRAM (2048 on 8 GB) | See above — the single biggest prefill lever |
 | `LOCAL_KV_TYPE` | `q8_0` | `f16` doubles KV memory for little quality gain |
 | `LOCAL_SLOTS` | 2 | Slots share one KV pool; the second stops background calls evicting your conversation's prefix |
 | `LOCAL_THREADS` | physical cores, capped at 16 | Memory bandwidth saturates around 8 threads; more rarely helps |
@@ -72,6 +72,21 @@ headroom, and re-check after changing the split.
 | `LOCAL_SEARCH` | 1 | `0` drops the web-search MCP server |
 | `LOCAL_RULES` | built-in | `""` disables the injected operating rules |
 | `LOCAL_BACKEND` | `llamacpp` | `ollama` if you have one running |
+
+### Rarely touched
+
+| Env | Default | What it does |
+|---|---|---|
+| `LOCAL_HOST` / `LOCAL_PORT` | `127.0.0.1` / `8080` | Where the server listens. Change the port if something else owns 8080 |
+| `LOCAL_BATCH` | 2048 | Logical batch size; `--ubatch-size` is the one that matters |
+| `CLAUDE_CODE_MAX_OUTPUT_TOKENS` | 32768 | Room for one reply. Too low truncates a long `Write` into invalid JSON — see [TROUBLESHOOTING](TROUBLESHOOTING.md) |
+| `API_TIMEOUT_MS` | 1800000 | 30 minutes. Must exceed the worst-case generation: 32k tokens at ~30 tok/s is ~18 minutes |
+| `LOCAL_START_TIMEOUT` | 600 | Seconds to wait for the server to come up; a 22 GB model reads from disk on first load |
+| `LOCAL_STOP_TIMEOUT` | 60 | Half-seconds to wait for it to exit before `SIGKILL`. It must release its VRAM before the next one starts |
+| `LOCAL_NCMOE_FALLBACK` | model's layer count | Expert split used before `bench --tune` has measured anything |
+| `LOCAL_SEARCH_CONFIG` | `~/.local-claude/search-mcp.json` | Path to the MCP config `install.sh` generates |
+| `LOCAL_LLAMA_ARGS` | — | Extra flags passed straight to `llama-server` |
+| `LOCAL_CLAUDE_PREFIX` / `LOCAL_CLAUDE_STATE` / `MODELS_DIR` | see [INSTALL](INSTALL.md#what-goes-where) | Relocate the install, state or models |
 
 ## Sizing context
 

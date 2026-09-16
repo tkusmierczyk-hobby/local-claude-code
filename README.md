@@ -167,8 +167,10 @@ model. The stack compensates automatically rather than hoping:
   features) are inactive. The agentic loop — files, bash, permissions, subagents,
   hooks, search — is fully local.
 - Claude Code prints `unrecognized_model` for any local model. Cosmetic.
-- Prefill still trails a CUDA build; llama.cpp ships no Linux CUDA binary. See
-  [docs/TUNING.md](docs/TUNING.md#still-on-the-table).
+- The default backend is Vulkan, because llama.cpp ships no Linux CUDA binary and
+  Vulkan needs nothing installed. A source-built CUDA backend is ~20% faster on
+  decode and ~50% on prefill — `./bin/build-cuda.sh --install-nvcc`, see
+  [docs/TUNING.md](docs/TUNING.md#backend-cuda-vs-vulkan).
 
 ## License
 
