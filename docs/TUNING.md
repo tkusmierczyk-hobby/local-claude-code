@@ -105,7 +105,7 @@ cached **per build**, because the same card is `Vulkan1` under one backend and
 `CUDA0` under the other.
 
 ```bash
-./bin/build-cuda.sh              # installs alongside, switches nothing
+./bin/build-cuda.sh --install-nvcc   # add --install-nvcc if you have no compiler
 LLAMA_DIR=~/.local/share/local-claude/<build>-cuda local-claude bench --tune
 ln -sfn ~/.local/share/local-claude/<build>-cuda ~/.local/share/local-claude/current
 ```

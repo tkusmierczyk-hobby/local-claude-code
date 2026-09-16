@@ -56,9 +56,13 @@ and `cuBLAS` with headers. Neither provides the offline compiler. Check with
 whole toolkit:
 
 ```bash
-conda create -y -p ~/.local/share/local-claude/cudaenv -c conda-forge \
-  cuda-nvcc cuda-cudart-dev cuda-cccl
+./bin/build-cuda.sh --install-nvcc     # fetches a compiler, then builds
 ```
+
+That installs `cuda-nvcc`, `cuda-cudart-dev` and `cuda-cccl` from conda-forge
+(~185 MB) into an isolated prefix — your base environment is untouched, and
+removing `~/.local/share/local-claude/cudaenv` undoes it. It needs `conda` on
+your `PATH`; if you have a toolkit elsewhere, pass `--nvcc /path/to/nvcc`.
 
 (The PyPI `nvidia-cuda-nvcc-cu12` wheel is *not* sufficient — it ships `ptxas`
 and `libnvvm` for runtime JIT, but not the `nvcc` driver binary.)

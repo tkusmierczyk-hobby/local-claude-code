@@ -8,6 +8,7 @@
 # compiler comes only from a toolkit.
 #
 #   ./bin/build-cuda.sh                  # find a toolkit, build, install alongside
+#   ./bin/build-cuda.sh --install-nvcc   # fetch a compiler first (~185 MB, via conda)
 #   ./bin/build-cuda.sh --nvcc /path/to/nvcc
 #   ./bin/build-cuda.sh --build b10988   # pin the llama.cpp source revision
 #   ./bin/build-cuda.sh --arch 89        # compute capability, if detection fails
@@ -18,11 +19,12 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 PREFIX="${LOCAL_CLAUDE_PREFIX:-$HOME/.local/share/local-claude}"
-NVCC=""; SRC_BUILD=""; ARCH=""; JOBS="$(nproc 2>/dev/null || echo 4)"
+NVCC=""; SRC_BUILD=""; ARCH=""; JOBS="$(nproc 2>/dev/null || echo 4)"; INSTALL_NVCC=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --nvcc)  NVCC="$2"; shift 2 ;;
+    --install-nvcc) INSTALL_NVCC=1; shift ;;
     --build) SRC_BUILD="$2"; shift 2 ;;
     --arch)  ARCH="$2"; shift 2 ;;
     --jobs)  JOBS="$2"; shift 2 ;;
@@ -37,15 +39,30 @@ die() { printf '\n\033[31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 
 # ---- 1. find the pieces of a toolkit ----------------------------------------
 say "1/5  Locating a CUDA toolchain"
-if [ -z "$NVCC" ]; then
-  for cand in "$PREFIX/cudaenv/bin/nvcc" /usr/local/cuda/bin/nvcc /opt/cuda/bin/nvcc "$(command -v nvcc 2>/dev/null || true)"; do
-    [ -n "$cand" ] && [ -x "$cand" ] && { NVCC="$cand"; break; }
+find_nvcc() {
+  local cand
+  for cand in "$PREFIX/cudaenv/bin/nvcc" /usr/local/cuda/bin/nvcc /opt/cuda/bin/nvcc \
+              "$(command -v nvcc 2>/dev/null || true)"; do
+    [ -n "$cand" ] && [ -x "$cand" ] && { echo "$cand"; return 0; }
   done
+  return 1
+}
+[ -z "$NVCC" ] && NVCC="$(find_nvcc || true)"
+
+if [ -z "$NVCC" ] && [ "$INSTALL_NVCC" = 1 ]; then
+  command -v conda >/dev/null 2>&1 \
+    || die "--install-nvcc needs conda on PATH. Install a toolkit another way and pass --nvcc"
+  info "installing a compiler into $PREFIX/cudaenv (~185 MB, isolated — your base env is untouched)"
+  conda create -y -p "$PREFIX/cudaenv" -c conda-forge cuda-nvcc cuda-cudart-dev cuda-cccl \
+    || die "conda install failed"
+  NVCC="$(find_nvcc || true)"
 fi
 [ -n "$NVCC" ] && [ -x "$NVCC" ] || die "no nvcc found.
-  The driver and PyTorch's wheels do not include it. Install one, for example:
-    conda create -y -p $PREFIX/cudaenv -c conda-forge cuda-nvcc cuda-cudart-dev cuda-cccl
-  then re-run, or pass --nvcc /path/to/nvcc"
+  Having \"CUDA installed\" is usually not enough: the driver provides libcuda and
+  makes nvidia-smi report a CUDA version, and PyTorch's wheels provide cudart and
+  cuBLAS — none of them provide the compiler. Get one with:
+    ./bin/build-cuda.sh --install-nvcc      (~185 MB, into $PREFIX/cudaenv)
+  or pass --nvcc /path/to/nvcc if you have a toolkit elsewhere."
 info "nvcc      $NVCC"
 info "version   $("$NVCC" --version | tail -1)"
 
