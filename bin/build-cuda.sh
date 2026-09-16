@@ -90,6 +90,8 @@ fi
 info "source    $SRC"
 
 # ---- 3. assemble a toolkit root ---------------------------------------------
+# CUDA_WHEEL_PYTHON=/path/to/python points at the interpreter whose site-packages
+# holds the nvidia/* wheels, if it is somewhere unusual.
 # CMake's FindCUDAToolkit expects bin/ include/ lib64/ in one tree. A conda
 # prefix already looks like that; pip wheels scatter the parts, so we stitch
 # symlinks into a tree that satisfies it.
@@ -113,10 +115,14 @@ else
   # where those live: PATH here may point at a build-only interpreter (the conda
   # env we just made) whose site-packages has no nvidia/ at all.
   PYSPS=()
-  for py in "$HOME/anaconda3/bin/python3" /usr/bin/python3 python3; do
+  for py in ${CUDA_WHEEL_PYTHON:-} /usr/bin/python3 python3 \
+            "$HOME"/anaconda3/bin/python3 "$HOME"/miniconda3/bin/python3 \
+            "$HOME"/.local/bin/python3 /usr/local/bin/python3; do
+    [ -n "$py" ] || continue
     command -v "$py" >/dev/null 2>&1 || continue
     sp="$("$py" -c 'import site;print(site.getsitepackages()[0])' 2>/dev/null)" || continue
-    [ -d "$sp/nvidia" ] && PYSPS+=("$sp")
+    [ -d "$sp/nvidia" ] || continue
+    case " ${PYSPS[*]:-} " in *" $sp "*) ;; *) PYSPS+=("$sp") ;; esac
   done
   [ ${#PYSPS[@]} -gt 0 ] && info "cuda libs from ${PYSPS[0]}/nvidia" || true
 
