@@ -65,25 +65,41 @@ esac
 # Careful: llama.cpp publishes version tags (v0.4.x) that carry *no* binaries
 # alongside build tags (bNNNNN) that do, and /releases/latest returns the former.
 # So walk recent releases and take the newest one that actually has our asset,
-# using the URL the API reports rather than constructing a filename.
-info "looking for the newest release with a $ASSET build..."
-read -r BUILD TARBALL URL <<<"$(
-  curl -fsSL "https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=30" \
-  | ASSET="$ASSET" WANT="${BUILD:-}" python3 -c '
+# using the URL the API reports rather than constructing a filename. A pinned
+# build is fetched by its tag, however old; if it is already installed, the
+# network is not needed at all.
+TARBALL="" URL="" SIZE=0 SHA=""
+if [ -n "$BUILD" ] && [ -x "$PREFIX/$BUILD/llama-server" ]; then
+  info "build     $BUILD (already installed)"
+else
+  if [ -n "$BUILD" ]; then
+    API="https://api.github.com/repos/ggml-org/llama.cpp/releases/tags/$BUILD"
+  else
+    API="https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=30"
+  fi
+  info "looking for ${BUILD:-the newest release} with a $ASSET build..."
+  # Two steps, so that each failure is caught: a command failing inside
+  # `read <<< "$(...)"` goes unnoticed, and the script used to carry on with an
+  # empty build name until tar failed on a directory.
+  releases="$(curl -fsSL --connect-timeout 20 --max-time 120 "$API")" \
+    || die "could not reach the GitHub API${BUILD:+ for release $BUILD}: offline, rate-limited (60 requests/hour)${BUILD:+, or no such tag}"
+  found="$(printf '%s' "$releases" | ASSET="$ASSET" python3 -c '
 import json, os, sys
-asset, want = os.environ["ASSET"], os.environ.get("WANT") or ""
-for rel in json.load(sys.stdin):
-    if want and rel["tag_name"] != want:
-        continue
+data = json.load(sys.stdin)
+for rel in (data if isinstance(data, list) else [data]):
     for a in rel.get("assets", []):
         n = a["name"]
-        if n.endswith(".tar.gz") and asset in n:
-            print(rel["tag_name"], n, a["browser_download_url"])
+        if n.endswith(".tar.gz") and os.environ["ASSET"] in n:
+            d = a.get("digest") or ""
+            sha = d.split(":", 1)[1] if d.startswith("sha256:") else "-"
+            print(rel["tag_name"], n, a["browser_download_url"], a.get("size", 0), sha)
             sys.exit(0)
 sys.exit(1)
-')" || die "no llama.cpp release with a $ASSET build in the last 30 releases${BUILD:+ (tag $BUILD)}; pass --build <tag>"
-info "build     $BUILD"
-info "asset     $TARBALL"
+')" || die "no llama.cpp release ${BUILD:+$BUILD }has a $ASSET build${BUILD:-; pass --build <tag>}"
+  read -r BUILD TARBALL URL SIZE SHA <<<"$found"
+  info "build     $BUILD"
+  info "asset     $TARBALL"
+fi
 
 # ---- 3. install it -----------------------------------------------------------
 say "3/6  Installing llama.cpp (user-space, no root)"

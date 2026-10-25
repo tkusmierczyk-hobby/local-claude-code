@@ -85,7 +85,8 @@ LLAMA_DIR=/path/to/llama.cpp/build/bin local-claude
 llama.cpp publishes two kinds of release: version tags (`v0.4.1`) that carry no
 binaries, and build tags (`b10988`) that do. `releases/latest` returns the former,
 so the installer walks recent releases and takes the newest that actually has a
-binary for your platform. If you need to pin one, pass `--build`.
+binary for your platform. If you need to pin one, pass `--build`: it is fetched by
+its tag however old it is, and needs no network at all if it is already installed.
 
 The stack requires a build new enough to have **`--n-cpu-moe`**; preflight checks
 this explicitly and fails loudly if it is missing.
