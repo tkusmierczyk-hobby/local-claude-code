@@ -120,8 +120,11 @@ python3 -m pip install requests beautifulsoup4
 ./install.sh                 # regenerates the MCP config
 ```
 
-DuckDuckGo rate-limits and intermittently refuses; the test reports those as SKIP
-rather than failure. `LOCAL_SEARCH=0` disables the server entirely.
+DuckDuckGo rate-limits and intermittently refuses, and after a burst of searches
+it answers with a bot check for a while. The search tool then tells the model it
+is blocked, rather than that nothing was found, and the test reports it as SKIP
+rather than failure. Waiting a few minutes clears it. `LOCAL_SEARCH=0` disables
+the server entirely.
 
 ## Claude Code says `unrecognized_model`
 

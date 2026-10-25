@@ -41,6 +41,22 @@ def _decode_ddg_href(href: str) -> str:
     return href
 
 
+class SearchBlocked(Exception):
+    """DuckDuckGo answered with its bot check instead of results."""
+
+
+def _blocked(r) -> bool:
+    # After a burst of searches DuckDuckGo serves a challenge page ("bots use
+    # DuckDuckGo too"): HTTP 202, an anomaly-modal form, no result links. A
+    # results page is a 200 with result links, even for a query about anomalies.
+    return "result-link" not in r.text and (r.status_code == 202 or "anomaly-modal" in r.text)
+
+
+BLOCKED_MSG = ("DuckDuckGo is temporarily blocking automated searches from this machine "
+               "(it served its bot check instead of results), so this is not an empty "
+               "result. Try again in a few minutes, or web_fetch a URL you already know.")
+
+
 def ddg_search(query: str, max_results: int = 5):
     def parse(html):
         soup = BeautifulSoup(html, "html.parser")
@@ -60,11 +76,15 @@ def ddg_search(query: str, max_results: int = 5):
     r = requests.get("https://lite.duckduckgo.com/lite/", params={"q": query},
                      headers=hdr, timeout=20)
     r.raise_for_status()
+    if _blocked(r):
+        raise SearchBlocked(BLOCKED_MSG)
     res = parse(r.text)
     if not res:
         r = requests.post("https://lite.duckduckgo.com/lite/", data={"q": query},
                           headers=hdr, timeout=20)
         r.raise_for_status()
+        if _blocked(r):
+            raise SearchBlocked(BLOCKED_MSG)
         res = parse(r.text)
     return res
 

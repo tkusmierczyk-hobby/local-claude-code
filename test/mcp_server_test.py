@@ -57,15 +57,17 @@ def check(name, cond):
 
 
 TRANSIENT = ("Max retries", "timed out", "Connection", "HTTPSConnectionPool",
-             "429", "Temporary failure", "Name or service not known")
+             "429", "Temporary failure", "Name or service not known",
+             "blocking automated searches")  # DuckDuckGo's bot check
 
 
 def check_net(name, cond, text):
     """A check that depends on someone else's server being up.
 
-    DuckDuckGo rate-limits and intermittently refuses, and the machine may simply
-    be offline. Neither says anything about whether this stack works, so a
-    transport-level failure is reported and skipped rather than counted.
+    DuckDuckGo rate-limits, serves a bot check after a burst of searches, and
+    intermittently refuses, and the machine may simply be offline. None of that
+    says anything about whether this stack works, so a transport-level failure
+    is reported and skipped rather than counted.
     """
     global fails
     if cond:
