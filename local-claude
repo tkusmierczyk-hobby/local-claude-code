@@ -42,6 +42,7 @@
 #   LOCAL_CLAUDE_MD=~/x.md             your instructions for local sessions
 #                                      (default: ~/.local-claude/CLAUDE.md, if present)
 #   LOCAL_SEARCH=0                     disable the local web-search MCP server
+#   LOCAL_BUILTIN_WEBFETCH=1           also allow Claude Code's own WebFetch (off by default)
 #   LOCAL_RULES=""                     disable small-model rule injection
 
 set -euo pipefail
@@ -646,7 +647,8 @@ EXTRA_ARGS=()
 # Web access goes through a tiny local MCP server instead of Claude Code's own
 # tools: web_search (DuckDuckGo's keyless "lite" page) and web_fetch (the page
 # itself). Nothing else is contacted. On by default; LOCAL_SEARCH=0 means no web
-# access at all, since the built-in WebSearch/WebFetch are switched off below.
+# access at all, since the built-in WebSearch/WebFetch are switched off below
+# (WebFetch can be switched back on with LOCAL_BUILTIN_WEBFETCH=1).
 SEARCH_MCP="${LOCAL_SEARCH_CONFIG:-$STATE_DIR/search-mcp.json}"
 if [[ "${LOCAL_SEARCH:-1}" != "0" ]] && [[ -f "$SEARCH_MCP" ]]; then
   EXTRA_ARGS+=(--mcp-config "$SEARCH_MCP")
@@ -674,8 +676,16 @@ fi
 # Nothing in a local session contacts Anthropic. With telemetry, error reports
 # and updates off (above), the one route left was the built-in WebFetch: before
 # each fetch it asks api.anthropic.com about the domain. Both built-in web tools
-# are switched off, and the domain check is skipped too, in case one is re-enabled.
-EXTRA_ARGS+=(--disallowedTools "WebFetch,WebSearch")
+# are switched off by default, and the domain check is skipped as well.
+# LOCAL_BUILTIN_WEBFETCH=1 allows WebFetch again: it fetches on this machine and
+# summarises with the local model, so with the check skipped it stays local.
+# WebSearch stays off regardless: Anthropic's servers run its searches, so
+# against a local model it returns nothing and the model answers from memory.
+if [[ "${LOCAL_BUILTIN_WEBFETCH:-0}" == "1" ]]; then
+  EXTRA_ARGS+=(--disallowedTools "WebSearch")
+else
+  EXTRA_ARGS+=(--disallowedTools "WebFetch,WebSearch")
+fi
 
 # The same goes for your global ~/.claude/CLAUDE.md: it is written for the cloud
 # model, can run to thousands of tokens, and Claude Code loads it in every
@@ -685,20 +695,21 @@ EXCLUDE=""
 if [[ "${LOCAL_GLOBAL_CLAUDE_MD:-0}" != "1" ]]; then
   EXCLUDE="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/CLAUDE.md"
 fi
-EXTRA_ARGS+=(--settings "$(python3 -c '
+SETTINGS="$(python3 -c '
 import json, sys
 s = {"skipWebFetchPreflight": True}
 if sys.argv[1]:
     s["claudeMdExcludes"] = [sys.argv[1]]
-print(json.dumps(s))' "$EXCLUDE")")
-if [[ -n "$EXCLUDE" ]]; then
-  # A --settings of your own replaces this one rather than adding to it.
-  for a in "$@"; do
-    case "$a" in --settings|--settings=*)
-      echo "[local-claude] note: your --settings replaces the launcher's, so ~/.claude/CLAUDE.md loads again; add \"claudeMdExcludes\" to yours to keep it out" >&2
-      break ;;
-    esac
-  done
-fi
+print(json.dumps(s))' "$EXCLUDE")"
+EXTRA_ARGS+=(--settings "$SETTINGS")
+# A --settings of your own replaces this one rather than adding to it, which
+# would bring back the global CLAUDE.md and, with LOCAL_BUILTIN_WEBFETCH=1, the
+# domain check that contacts Anthropic.
+for a in "$@"; do
+  case "$a" in --settings|--settings=*)
+    echo "[local-claude] note: your --settings replaces the launcher's; copy this into yours to keep its effect: $SETTINGS" >&2
+    break ;;
+  esac
+done
 
 exec claude --model "$LOCAL_MODEL" "${EXTRA_ARGS[@]}" "$@"

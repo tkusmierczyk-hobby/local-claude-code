@@ -154,7 +154,7 @@ model. The stack compensates automatically rather than hoping:
 | Operating rules injected into the system prompt | `LOCAL_RULES=""` to disable |
 | Syntax errors fed straight back to the model | `hooks/syntax_check.sh` on Write/Edit |
 | Cannot declare "done" while `.claude/verify.sh` fails | `hooks/verify_on_stop.sh`, max 2 retries |
-| Web search and fetch through a local server; Claude Code's own web tools are off, since its fetch asks Anthropic about every domain | `LOCAL_SEARCH=0` for no web access at all |
+| Web search and fetch through a local server; Claude Code's own web tools are off, since its fetch asks Anthropic about every domain and its search cannot work locally | `LOCAL_SEARCH=0` for no web access at all; `LOCAL_BUILTIN_WEBFETCH=1` allows the built-in fetch, with the Anthropic check skipped |
 | Your global `~/.claude/CLAUDE.md` is skipped: it is written for the cloud model and costs context | `LOCAL_GLOBAL_CLAUDE_MD=1` to load it anyway |
 | Instructions of your own for every local session, written for the local model | `~/.local-claude/CLAUDE.md`, if you create it |
 | Best-of-N attempts gated on your acceptance test | `local-claude attempts 3 "..."` |
