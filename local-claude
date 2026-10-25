@@ -32,6 +32,7 @@
 #   LOCAL_THREADS=12                   CPU threads, unpinned (default: one per P-core, pinned)
 #   LOCAL_PIN=0                        do not pin threads to cores
 #   LOCAL_UBATCH=2048                  micro-batch (default: tuned value, else from VRAM)
+#   LOCAL_LOAD_MODE=none               experts in pinned RAM: faster prefill, ~17 GB locked
 #   LOCAL_MMPROJ=~/models/mmproj-F16.gguf   enable vision (auto-detected if unambiguous)
 #   LOCAL_THINKING=0                   disable chain-of-thought (much faster turns)
 #   LOCAL_TEMPLATE=0                   use the model's stock chat template (see docs)
@@ -388,6 +389,19 @@ start_llama() {
     # CPU is the cheaper place for it unless you have headroom to spare.
     [[ "${LOCAL_MMPROJ_DEVICE:-cpu}" == "cpu" ]] && args+=(--no-mmproj-offload)
     VISION_NOTE=" +vision($(basename "$mmproj"))"
+  fi
+  # LOCAL_LOAD_MODE=none loads the RAM-resident experts into pinned memory
+  # instead of memory-mapping the file, so the prompt-time copies to the GPU run
+  # from pinned pages: ~7% faster prefill. The cost is ~17 GB the kernel can no
+  # longer reclaim while the server runs — other work on the machine runs out of
+  # memory instead of slowing the model down — so it is opt-in. llama.cpp logs a
+  # warning recommending it on every start; that is expected.
+  if [[ -n "${LOCAL_LOAD_MODE:-}" ]]; then
+    if llama_supports --load-mode; then
+      args+=(--load-mode "$LOCAL_LOAD_MODE")
+    else
+      echo "[local-claude] this llama.cpp build has no --load-mode; ignoring LOCAL_LOAD_MODE" >&2
+    fi
   fi
   [[ -n "${LOCAL_LLAMA_ARGS:-}" ]] && args+=(${LOCAL_LLAMA_ARGS})
 

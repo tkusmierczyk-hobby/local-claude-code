@@ -96,6 +96,7 @@ busy-loop load is CPU-only; a memory-bandwidth-heavy neighbour is untested.
 | `LOCAL_NCMOE` | tuned value | Override the sweep |
 | `LOCAL_UBATCH` | tuned (4096 here), else from VRAM | See above — the single biggest prefill lever |
 | `LOCAL_KV_TYPE` | `q8_0` | `f16` doubles KV memory for little quality gain |
+| `LOCAL_LOAD_MODE` | unset (memory-mapped) | `none` puts the RAM-resident experts in pinned memory: prefill 1155 vs 1070 tok/s here, decode unchanged. But ~17 GB is then locked while the server runs, so other programs run out of memory instead of the model slowing down. Use it on a machine that does nothing else |
 | `LOCAL_SLOTS` | 2 | Slots share one KV pool; the second stops background calls evicting your conversation's prefix |
 | `LOCAL_THREADS` | one per performance core | Setting it also turns pinning off — see Threads above |
 | `LOCAL_PIN` | 1 | `0` leaves threads unpinned |
