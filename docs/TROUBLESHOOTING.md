@@ -9,7 +9,7 @@ needing a model loaded.
 card. Delete the tuned value and re-measure:
 
 ```bash
-rm ~/.local-claude/ncmoe && local-claude bench --tune
+rm -f ~/.local-claude/ncmoe ~/.local-claude/ncmoe.* && local-claude bench --tune
 ```
 
 **Something else holds the GPU.** A previous server, or a benchmark run, may still

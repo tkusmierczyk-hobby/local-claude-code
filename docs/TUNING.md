@@ -10,7 +10,7 @@ local-claude bench --tune
 
 This starts the real server at each candidate split, times a long-prompt request,
 stops at the first value that will not allocate, and writes the winner to
-`~/.local-claude/ncmoe`. It measures the actual server — same context, slots and
+`~/.local-claude/ncmoe.<build>`, where the launcher reads it. It measures the actual server — same context, slots and
 KV type you run — because all three consume the VRAM the expert layers compete
 for, and `llama-bench` would size its KV cache from its own arguments instead.
 

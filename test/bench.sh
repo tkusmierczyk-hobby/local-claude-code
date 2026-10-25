@@ -21,7 +21,16 @@
 set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
-STATE_DIR="$HOME/.local-claude"
+STATE_DIR="${LOCAL_CLAUDE_STATE:-$HOME/.local-claude}"
+# Same lookup as the launcher: the tuned value is stored per build, and it is
+# only used if it lands in the file the launcher reads.
+PREFIX="${LOCAL_CLAUDE_PREFIX:-$HOME/.local/share/local-claude}"
+if [[ -z "${LLAMA_DIR:-}" ]]; then
+  for cand in "$PREFIX/current" "$HOME/opt/llamacpp/current"; do
+    [[ -x "$cand/llama-server" ]] && { LLAMA_DIR="$cand"; break; }
+  done
+  LLAMA_DIR="${LLAMA_DIR:-$PREFIX/current}"
+fi
 MODELS_DIR="${MODELS_DIR:-$HOME/models}"
 PORT="${LOCAL_PORT:-8080}"
 BASE="http://127.0.0.1:$PORT"
@@ -66,7 +75,7 @@ measure() {
   python3 - "$BASE" <<'PY'
 import json, sys, urllib.request
 base = sys.argv[1]
-# ~4k tokens of code-shaped text: representative of what Claude Code sends.
+# ~9.5k tokens of code-shaped text: representative of what Claude Code sends.
 prompt = "Summarize this module:\n" + "".join(
     f"def f{i}(x):\n    \"\"\"helper {i}\"\"\"\n    return x * {i} + {i % 7}\n\n" for i in range(340))
 body = {"prompt": prompt, "n_predict": 128, "cache_prompt": False, "temperature": 0}
@@ -109,9 +118,10 @@ done
 echo
 if [[ "$TUNE" == "1" && -n "$best_n" ]]; then
   # keyed by build: backends have different VRAM footprints for the same model
-  echo "$best_n" > "$STATE_DIR/ncmoe.$(basename "$(readlink -f "$LLAMA_DIR" 2>/dev/null || echo "$LLAMA_DIR")")"
+  cache="$STATE_DIR/ncmoe.$(basename "$(readlink -f "$LLAMA_DIR" 2>/dev/null || echo "$LLAMA_DIR")")"
+  echo "$best_n" > "$cache"
   echo "$best_n" > "$STATE_DIR/ncmoe"
-  echo "tuned: --n-cpu-moe $best_n ($best_tg tok/s decode) -> $STATE_DIR/ncmoe"
+  echo "tuned: --n-cpu-moe $best_n ($best_tg tok/s decode) -> $cache"
   echo "the launcher picks this up on the next start"
 fi
 free -g | awk '/^Mem:/ {printf "ram: %d GB used / %d GB total\n", $3, $2}'
