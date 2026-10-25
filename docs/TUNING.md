@@ -49,9 +49,10 @@ Same split, varying the micro-batch:
 | 3072 / 4096 | — | compute buffer no longer fits at this split |
 
 **2.8× prefill, decode untouched.** The 512 default is sized for a model that
-lives on the GPU. With experts on the CPU, prefill is bound by expert matrix
-multiplies, and a larger micro-batch loads each expert once and reuses it across
-more of the batch.
+lives on the GPU. Here, prompt processing copies the RAM-resident experts to the
+GPU once per micro-batch (llama.cpp does this for any batch of 32+ tokens; see
+[MOE-OFFLOAD.md](MOE-OFFLOAD.md#the-flag-that-mattered-more-than-the-tuning)), so
+a larger micro-batch pays that copy fewer times per token.
 
 4096 does fit once two more expert layers move to RAM, and that trade pays: on the
 CUDA build with pinned threads, `--n-cpu-moe 36 --ubatch-size 4096` reads a

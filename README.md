@@ -106,12 +106,18 @@ worth ~20% of decode and ~50% of prefill here, but it is a source build — see
 [docs/INSTALL.md](docs/INSTALL.md#platforms). Vulkan needs nothing installed and
 is what `install.sh` sets up by default.
 
+Re-tuned since, with one thread pinned per performance core and
+`--n-cpu-moe 36 --ubatch-size 4096`, the CUDA build decodes at ~38 tok/s, reads a
+65k-token prompt at ~1000 tok/s, and does the agentic task in 35 s — see
+[docs/TUNING.md](docs/TUNING.md).
+
 **Two flags did most of the work, and the famous one was not the bigger.**
 `--n-cpu-moe` is the strategy — without it, none of this runs at a usable speed.
 But `--ubatch-size` was worth **2.8× prefill** (232 → 648 tok/s) at no cost to
-decode: llama.cpp defaults it to 512, which assumes a GPU-resident model, and with
-the experts on the CPU a larger micro-batch amortises their matrix multiplies far
-better. `install.sh` sets it from your VRAM.
+decode: llama.cpp defaults it to 512, which assumes a GPU-resident model, but here
+each micro-batch of prompt copies the RAM-resident experts to the GPU once, so a
+larger one copies far less per token. `bench --tune` picks it together with the
+split.
 
 ## Vision
 

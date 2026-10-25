@@ -111,3 +111,20 @@ export LOCAL_BACKEND=ollama                # or make it the default for a shell
 
 To go back permanently, change `LOCAL_BACKEND` default at the top of
 `local-claude`. Nothing else in the stack is llama.cpp-specific.
+
+## Re-tune, October 2026
+
+A second XDA piece on `--n-cpu-moe` with 8 GB GPUs prompted a re-check of the
+settings it does not cover. Adopted: one pinned thread per performance core,
+and a micro-batch tuned with the split (numbers in [TUNING.md](TUNING.md)).
+Tried and rejected:
+
+- **Restricting threads to the P-cores without strict placement.** As fast when
+  idle, but under background load the threads pile onto the same cores: decode
+  fell to 14 tok/s with 8 busy processes, against 36.5 pinned.
+- **Pinned expert memory by default** (`--load-mode none`). +7% prefill, but ~17 GB
+  the kernel cannot reclaim on a machine that also runs experiments. Opt-in as
+  `LOCAL_LOAD_MODE=none`.
+- **The article's smaller quant (UD-IQ4_XS, 17.7 GB).** Not tried: ~13% fewer
+  expert bytes would buy less than the two changes above, at a quality cost and a
+  10–16 h download on this link.

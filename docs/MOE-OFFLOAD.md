@@ -76,9 +76,10 @@ The tuning job is to find the smallest N that still fits, and it is a sweep:
 
 `bench --tune` walks N downward, and at each value starts the **real
 llama-server** through `local-claude start` and times one long-prompt request
-(~4k tokens of prefill, then 128 tokens of generation). It stops at the first
-value where the server cannot allocate, and writes the best to
-`~/.local-claude/ncmoe`, which the launcher then uses.
+(~9.5k tokens of prefill, then 128 tokens of generation). It stops at the first
+value where the server cannot allocate, tries a doubled micro-batch (see below),
+and writes the winners to `~/.local-claude/ncmoe.<build>` and `ubatch.<build>`,
+which the launcher then uses.
 
 Tuning against the real server rather than `llama-bench` matters: context size,
 slot count and KV cache type all take VRAM away from the expert layers, and
@@ -88,11 +89,15 @@ model, quantisation, context size, or KV cache type — all four move the VRAM b
 
 Rules of thumb when reading the sweep:
 
-- **Decode (tok/s)** is what you feel while the model types. It is bound by how
-  fast expert weights stream from RAM, so it improves slowly as N drops.
+- **Decode (tok/s)** is what you feel while the model types. One token at a time,
+  the CPU multiplies the experts of the RAM-resident layers itself, and nothing
+  crosses PCIe. It is bound by how fast the CPU threads read those experts, so it
+  improves slowly as N drops, and depends on where the threads run (TUNING.md).
 - **Prefill (tok/s)** is what you wait for when Claude Code sends a 15k-token
-  system prompt. It is compute-bound and improves sharply when more work lands on
-  the GPU.
+  system prompt. It does *not* run on the CPU: for any batch of 32 or more tokens,
+  llama.cpp copies the experts that batch uses to the GPU and multiplies them
+  there. It improves when fewer expert bytes stay in RAM, or when each copy serves
+  more tokens (a bigger micro-batch).
 - If a value fails to allocate, you have found the ceiling; back off by 2.
 
 ## Why context is cheap on this model
@@ -154,6 +159,10 @@ costs that a CPU-side expert path actually pays:
    is latency-sensitive rather than bandwidth-saturating; the CPU does not reach
    the 65 GB/s a streaming benchmark reports.
 
+A fourth cost turned up later: the decode threads work in lockstep, and with 16
+unpinned threads on a hybrid CPU some ran on efficiency cores or shared a core.
+One thread per performance core, pinned, is worth +13% decode (see TUNING.md).
+
 The lesson is not that the arithmetic was useless — it chose the right strategy
 and predicted the memory layout correctly. It is that a bandwidth bound is an
 upper bound on the *memory* term only, and should be quoted as "no faster than",
@@ -172,12 +181,25 @@ With the split fixed at `--n-cpu-moe 34`, varying the micro-batch size:
 | 3072 / 4096 | — | did not start (compute buffer too large) |
 
 **2.8&times; prefill for one flag**, and decode is untouched. The default of 512 is
-sized for a model that lives on the GPU. When the experts are on the CPU, prefill
-is bound by expert GEMM throughput, and a larger micro-batch means each expert is
-loaded once and reused across far more tokens in the batch — the same reuse
-argument that makes prefill compute-bound in the first place, applied to the CPU
-side. Above 2048 the compute buffers no longer fit in what the expert layers left
-behind, which is the trade-off to re-check on a card with more VRAM.
+sized for a model that lives on the GPU.
+
+This document first explained the gain as the CPU reusing each expert across a
+bigger batch. That was wrong about where prefill runs. For any batch of 32 or more
+tokens, llama.cpp's scheduler copies the experts the batch uses from RAM to the GPU
+over PCIe and multiplies them there ("op offload"); with it turned off
+(`--no-op-offload`) the CPU does the work, and prefill drops from 860 to 225 tok/s.
+A 2048-token micro-batch routes to nearly all 256 experts of every layer, so each
+micro-batch copies the whole RAM-resident share, ~16.7 GB at `--n-cpu-moe 34`,
+across a PCIe 4.0 x8 link. That is a fixed cost per micro-batch, and the
+near-proportional gains in the table above are its signature: a bigger micro-batch
+pays it fewer times per token.
+
+The corrected view predicted the next step. 4096 does not fit at `--n-cpu-moe 34`,
+but two more expert layers in RAM free room for its compute buffer, and the trade
+pays: 1068 against 854 tok/s prefill for 38.9 against 39.3 tok/s decode (CUDA build).
+`bench --tune` now tunes the pair. Copying from pinned rather than memory-mapped
+pages (`LOCAL_LOAD_MODE=none`) is worth another ~7%, at the price of locking the
+experts in RAM.
 
 In production (`--n-cpu-moe 34 --ubatch-size 2048 --ctx-size 131072`), on a
 14k-token prompt:
@@ -191,6 +213,21 @@ In production (`--n-cpu-moe 34 --ubatch-size 2048 --ctx-size 131072`), on a
 
 API conformance is 7/7 on both, against the previous whole-layer stack's 76 s and
 32.1 tok/s.
+
+## Re-tuned, October 2026
+
+Same machine, CUDA build, after pinning one thread per performance core and
+tuning the micro-batch with the split. The 9.5k-token figures are means of 3 runs;
+the 65k-token and end-to-end figures are single runs.
+
+| | before: 34 / 2048, 16 threads | after: 36 / 4096, 8 pinned |
+|---|---|---|
+| prefill, 9.5k-token prompt | 859 tok/s | **1079** |
+| prefill, 65k-token prompt | 791 tok/s | **1007** |
+| decode at 9.5k context | 35.3 tok/s | **38.3** |
+| decode at 65k context | 27.7 tok/s | **29.8** |
+| VRAM | 7740 MiB | 7768 MiB |
+| agentic end-to-end | 40 s | **35 s** |
 
 ## Backend, revisited
 
