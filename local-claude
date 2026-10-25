@@ -39,6 +39,8 @@
 #   LOCAL_BACKEND=ollama               fall back to the old ollama backend
 #   LOCAL_MCP=1                        keep user MCP servers (off by default)
 #   LOCAL_GLOBAL_CLAUDE_MD=1           also load ~/.claude/CLAUDE.md (skipped by default)
+#   LOCAL_CLAUDE_MD=~/x.md             your instructions for local sessions
+#                                      (default: ~/.local-claude/CLAUDE.md, if present)
 #   LOCAL_SEARCH=0                     disable the local web-search MCP server
 #   LOCAL_RULES=""                     disable small-model rule injection
 
@@ -499,6 +501,9 @@ if [[ "${1:-}" == "status" ]]; then
   echo "ubatch:   ${LOCAL_UBATCH:-$(default_ubatch)}$([[ -s "$(ubatch_cache)" ]] && echo ' (tuned)')"
   pick_threads
   echo "threads:  $THREADS${PIN_CPUS:+, pinned to CPUs $PIN_CPUS}"
+  md="${LOCAL_CLAUDE_MD:-$STATE_DIR/CLAUDE.md}"
+  echo "claude.md: $([[ -s "$md" ]] && echo "$md ($(wc -l < "$md") lines)" || echo "none (write one at $md)");" \
+       "$([[ "${LOCAL_GLOBAL_CLAUDE_MD:-0}" == 1 ]] && echo "~/.claude/CLAUDE.md also loaded" || echo "~/.claude/CLAUDE.md skipped")"
   nvidia-smi --query-gpu=name,memory.used,memory.total --format=csv,noheader 2>/dev/null | sed 's/^/gpu:      /'
   free -g | awk '/^Mem:/ {printf "ram:      %d GB used / %d GB total\n", $3, $2}'
   exit 0
@@ -648,7 +653,19 @@ if [[ "${LOCAL_SEARCH:-1}" != "0" ]] && [[ -f "$SEARCH_MCP" ]]; then
 8. You have web_search and web_fetch tools (from the \"search\" MCP server). Use web_search when you need current information, library docs, or facts not in the codebase, then web_fetch a result URL to read it. Do not claim you cannot access the internet."
 fi
 
-[[ -n "$LOCAL_RULES" ]] && EXTRA_ARGS+=(--append-system-prompt "$LOCAL_RULES")
+# Your own standing instructions for local sessions, in place of the global
+# ~/.claude/CLAUDE.md skipped below: ~/.local-claude/CLAUDE.md, or LOCAL_CLAUDE_MD.
+# Appended to the system prompt after the operating rules, in every project.
+APPEND="$LOCAL_RULES"
+LOCAL_MD="${LOCAL_CLAUDE_MD:-$STATE_DIR/CLAUDE.md}"
+if [[ -s "$LOCAL_MD" ]]; then
+  APPEND="${APPEND:+$APPEND
+
+}# The user's instructions for every session (from $LOCAL_MD)
+
+$(cat "$LOCAL_MD")"
+fi
+[[ -n "$APPEND" ]] && EXTRA_ARGS+=(--append-system-prompt "$APPEND")
 # Keep the context window lean: only the MCP servers we pass explicitly
 # (i.e. the search server), never project/user-discovered ones — unless opted in.
 [[ "${LOCAL_MCP:-0}" != "1" ]] && EXTRA_ARGS+=(--strict-mcp-config)
