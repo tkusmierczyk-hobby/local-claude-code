@@ -38,6 +38,7 @@
 #   LOCAL_TEMPLATE=0                   use the model's stock chat template (see docs)
 #   LOCAL_BACKEND=ollama               fall back to the old ollama backend
 #   LOCAL_MCP=1                        keep user MCP servers (off by default)
+#   LOCAL_GLOBAL_CLAUDE_MD=1           also load ~/.claude/CLAUDE.md (skipped by default)
 #   LOCAL_SEARCH=0                     disable the local web-search MCP server
 #   LOCAL_RULES=""                     disable small-model rule injection
 
@@ -651,5 +652,20 @@ fi
 # Keep the context window lean: only the MCP servers we pass explicitly
 # (i.e. the search server), never project/user-discovered ones — unless opted in.
 [[ "${LOCAL_MCP:-0}" != "1" ]] && EXTRA_ARGS+=(--strict-mcp-config)
+# The same goes for your global ~/.claude/CLAUDE.md: it is written for the cloud
+# model, can run to thousands of tokens, and Claude Code loads it in every
+# session — under $HOME a second way too, as a parent folder's .claude/CLAUDE.md.
+# Excluding it by path covers both; the project's own CLAUDE.md still loads.
+if [[ "${LOCAL_GLOBAL_CLAUDE_MD:-0}" != "1" ]]; then
+  EXTRA_ARGS+=(--settings "$(python3 -c 'import json, sys; print(json.dumps({"claudeMdExcludes": [sys.argv[1]]}))' \
+                             "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/CLAUDE.md")")
+  # A --settings of your own replaces this one rather than adding to it.
+  for a in "$@"; do
+    case "$a" in --settings|--settings=*)
+      echo "[local-claude] note: your --settings replaces the launcher's, so ~/.claude/CLAUDE.md loads again; add \"claudeMdExcludes\" to yours to keep it out" >&2
+      break ;;
+    esac
+  done
+fi
 
 exec claude --model "$LOCAL_MODEL" "${EXTRA_ARGS[@]}" "$@"

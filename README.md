@@ -153,6 +153,7 @@ model. The stack compensates automatically rather than hoping:
 | Syntax errors fed straight back to the model | `hooks/syntax_check.sh` on Write/Edit |
 | Cannot declare "done" while `.claude/verify.sh` fails | `hooks/verify_on_stop.sh`, max 2 retries |
 | Web search, since the built-in one runs server-side | local MCP server, `LOCAL_SEARCH=0` to disable |
+| Your global `~/.claude/CLAUDE.md` is skipped: it is written for the cloud model and costs context | `LOCAL_GLOBAL_CLAUDE_MD=1` to load it anyway |
 | Best-of-N attempts gated on your acceptance test | `local-claude attempts 3 "..."` |
 
 ## Documentation
