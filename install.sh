@@ -35,6 +35,39 @@ done
 say()  { printf '\n\033[1m%s\033[0m\n' "$*"; }
 info() { printf '  %s\n' "$*"; }
 die()  { printf '\n\033[31merror:\033[0m %s\n' "$*" >&2; exit 1; }
+sha256_of() { { sha256sum "$1" 2>/dev/null || shasum -a 256 "$1"; } | cut -d' ' -f1; }
+
+# fetch URL FILE SIZE SHA256 — a download that survives a slow, flaky link. It
+# resumes into FILE.part and renames only once size and checksum match, so an
+# interrupted run neither leaves a truncated file that looks complete nor starts
+# over. A FILE already present is checked the same way: older installers could
+# leave a truncated one. No curl --retry: with -C - it resumes from a stale
+# offset and re-downloads the same bytes (CLAUDE.md); this loop is the retry,
+# and --speed-limit gives up on a connection that stalls while still open.
+fetch() {
+  local url="$1" file="$2" size="$3" sha="$4" part="$2.part" have n=0
+  [ "$size" -gt 0 ] || die "the release lists no size for $(basename "$file")"
+  [ -f "$file" ] && mv -f "$file" "$part"
+  while [ ! -f "$file" ]; do
+    have=0; [ -f "$part" ] && have=$(( $(wc -c < "$part") ))
+    [ "$have" -gt "$size" ] && { rm -f "$part"; have=0; }
+    if [ "$have" -lt "$size" ]; then
+      n=$((n + 1))
+      [ "$n" -le 10 ] || die "download incomplete after 10 attempts; re-run ./install.sh to resume"
+      info "downloading $(basename "$file"): $(( have / 1048576 )) of $(( size / 1048576 )) MB so far"
+      curl -fL -C - --connect-timeout 30 --speed-limit 10000 --speed-time 60 \
+           --progress-bar -o "$part" "$url" || sleep 5
+      continue
+    fi
+    if [ "$sha" != "-" ] && [ "$(sha256_of "$part")" != "$sha" ]; then
+      rm -f "$part"
+      die "checksum mismatch for $(basename "$file"); deleted it, re-run ./install.sh"
+    fi
+    mv -f "$part" "$file"
+    if [ "$sha" = "-" ]; then info "downloaded $(basename "$file") (the release publishes no checksum)"
+    else info "verified  $(basename "$file") (sha256 ${sha:0:12}…)"; fi
+  done
+}
 
 # ---- 1. what are we working with --------------------------------------------
 say "1/6  Inspecting this machine"
@@ -125,11 +158,7 @@ elif [ -x "$DEST/llama-server" ]; then
   info "already installed at $DEST"
 else
   mkdir -p "$PREFIX/dl" "$DEST"
-  if [ ! -s "$PREFIX/dl/$TARBALL" ]; then
-    info "downloading (resumable)..."
-    curl -fL -C - --retry 3 --progress-bar -o "$PREFIX/dl/$TARBALL" "$URL" \
-      || die "download failed: $URL"
-  fi
+  fetch "$URL" "$PREFIX/dl/$TARBALL" "$SIZE" "$SHA"
   tar xzf "$PREFIX/dl/$TARBALL" -C "$DEST" --strip-components=1 2>/dev/null \
     || tar xzf "$PREFIX/dl/$TARBALL" -C "$DEST"
   # Release layouts have varied; find the binaries wherever they landed.
