@@ -36,7 +36,7 @@ PORT="${LOCAL_PORT:-8080}"
 BASE="http://127.0.0.1:$PORT"
 mkdir -p "$STATE_DIR"
 
-MODEL=""; CTX="${LOCAL_CTX:-131072}"; SWEEP=""; TUNE=0
+MODEL=""; CTX="${LOCAL_CTX:-${HWENV_LOCAL_CTX:-131072}}"; SWEEP=""; TUNE=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --tune)   TUNE=1; shift ;;

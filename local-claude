@@ -55,12 +55,14 @@ LOCAL_HOST="${LOCAL_HOST:-127.0.0.1}"
 LOCAL_PORT="${LOCAL_PORT:-8080}"
 mkdir -p "$STATE_DIR"
 
-# install.sh writes hardware-derived defaults here. Anything already set in the
-# environment wins, so these never override an explicit choice.
+# install.sh writes hardware-derived defaults here. They are loaded as HWENV_*,
+# not under their own names: exported as LOCAL_*, they would look exactly like a
+# choice the user made — outranking values `bench --tune` measured, and passed
+# on as "explicit" to every child, the tuner's own server starts included.
 if [[ -f "$STATE_DIR/hardware.env" ]]; then
   while IFS='=' read -r k v; do
     [[ "$k" =~ ^[A-Z_]+$ ]] || continue
-    [[ -n "${!k:-}" ]] || export "$k=$v"
+    export "HWENV_$k=$v"
   done < "$STATE_DIR/hardware.env"
 fi
 
@@ -260,10 +262,10 @@ model_expert_count() {
 start_llama() {
   local model="$1"
   local VISION_NOTE=""
-  local ctx="${LOCAL_CTX:-131072}"
+  local ctx="${LOCAL_CTX:-${HWENV_LOCAL_CTX:-131072}}"
   local ncmoe="${LOCAL_NCMOE:-$(default_ncmoe "$model")}"
   local dev="${LOCAL_DEVICE:-$(detect_device)}"
-  local threads="${LOCAL_THREADS:-$(nproc --all 2>/dev/null | awk '{print int($1/2)}')}"
+  local threads="${LOCAL_THREADS:-${HWENV_LOCAL_THREADS:-$(nproc --all 2>/dev/null | awk '{print int($1/2)}')}}"
   # Two slots, because Claude Code interleaves background calls (titles,
   # summaries) with the conversation. Sharing one slot would evict the
   # conversation's cached prefix and force a full re-prefill every turn.
@@ -285,7 +287,7 @@ start_llama() {
     --cache-type-v "${LOCAL_KV_TYPE:-q8_0}"
     --threads "$threads"
     --batch-size "${LOCAL_BATCH:-2048}"
-    --ubatch-size "${LOCAL_UBATCH:-2048}"   # 512 (the default) costs 2.8x prefill
+    --ubatch-size "${LOCAL_UBATCH:-${HWENV_LOCAL_UBATCH:-2048}}"   # 512 (the default) costs 2.8x prefill
                                             # here: with experts on the CPU, bigger
                                             # micro-batches amortise the expert GEMMs
     --cache-reuse 256             # reuse KV across turns instead of re-prefilling
@@ -503,7 +505,7 @@ else
   # get rejected mid-session instead of compacted.
   EFFECTIVE_CTX="$(curl -sf "$BASE_URL/props" 2>/dev/null \
     | python3 -c "import sys,json;print(json.load(sys.stdin).get('default_generation_settings',{}).get('n_ctx',0))" 2>/dev/null || echo 0)"
-  [[ "${EFFECTIVE_CTX:-0}" -lt 8192 ]] && EFFECTIVE_CTX="${LOCAL_CTX:-131072}"
+  [[ "${EFFECTIVE_CTX:-0}" -lt 8192 ]] && EFFECTIVE_CTX="${LOCAL_CTX:-${HWENV_LOCAL_CTX:-131072}}"
 fi
 
 # ---- Point Claude Code at the local backend ---------------------------------
