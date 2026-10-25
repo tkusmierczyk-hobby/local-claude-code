@@ -114,8 +114,8 @@ To go back permanently, change `LOCAL_BACKEND` default at the top of
 
 ## Re-tune, October 2026
 
-A second XDA piece on `--n-cpu-moe` with 8 GB GPUs prompted a re-check of the
-settings it does not cover. Adopted: one pinned thread per performance core,
+[A second XDA piece on `--n-cpu-moe` with 8 GB GPUs](https://www.xda-developers.com/i-stopped-thinking-my-8gb-gpu-was-too-small-after-learning-to-offload-moe-llm-layers-to-ram/)
+prompted a re-check of the settings it does not cover. Adopted: one pinned thread per performance core,
 and a micro-batch tuned with the split (numbers in [TUNING.md](TUNING.md)).
 Tried and rejected:
 

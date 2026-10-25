@@ -20,7 +20,8 @@ llama-server  (llama.cpp — user-space, no root)
 ## Requirements
 
 - **Claude Code** already installed and on your `PATH`
-- **Linux x64** (tested) or macOS/arm64 (supported, less tested)
+- **Linux x64** (tested). The installer also has a macOS/arm64 path, but it has
+  never been run on a Mac
 - **A GPU helps but is not required.** NVIDIA via Vulkan needs no CUDA toolkit
 - **RAM is the real constraint** — it decides which model you can run:
 
@@ -181,3 +182,6 @@ model. The stack compensates automatically rather than hoping:
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+This is an independent project, not affiliated with or endorsed by Anthropic.
+Claude Code is not included; install it separately, under Anthropic's terms.

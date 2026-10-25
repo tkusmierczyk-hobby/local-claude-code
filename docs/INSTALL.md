@@ -39,7 +39,7 @@ Environment overrides: `LOCAL_CLAUDE_PREFIX`, `LOCAL_CLAUDE_STATE`, `MODELS_DIR`
 | Linux x64 + NVIDIA | Vulkan | tested — the reference machine |
 | Linux x64, no GPU | CPU | supported; only small models are practical |
 | Linux arm64 | CPU | supported, untested |
-| macOS arm64 | Metal | supported, untested — unified memory means VRAM sizing differs |
+| macOS arm64 | Metal | installer path exists, never run — unified memory means VRAM sizing differs |
 
 **NVIDIA users:** the installer chooses Vulkan deliberately, because llama.cpp
 publishes no Linux CUDA binaries and Vulkan reaches the same matrix cores with
