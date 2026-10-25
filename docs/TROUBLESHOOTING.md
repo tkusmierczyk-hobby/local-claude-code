@@ -133,6 +133,11 @@ is blocked, rather than that nothing was found, and the test reports it as SKIP
 rather than failure. Waiting a few minutes clears it. `LOCAL_SEARCH=0` disables
 the server entirely.
 
+## `/resume` does not list a local session
+
+By design: local sessions are not saved, so there is nothing to resume. Start
+with `LOCAL_SAVE_SESSIONS=1 local-claude` for sessions you want to keep.
+
 ## Claude Code says `unrecognized_model`
 
 Expected, and cosmetic. Local models are not in the client's catalog. The context

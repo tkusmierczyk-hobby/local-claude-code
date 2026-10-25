@@ -116,7 +116,9 @@ def dispatch_tool(name: str, args: dict) -> str:
     if logpath:
         try:
             with open(logpath, "a") as fh:
-                fh.write(f"{time.strftime('%H:%M:%S')} {name} {json.dumps(args)[:200]}\n")
+                # The tool name only: queries and URLs come from the user's
+                # conversation, and the stack stores none of it.
+                fh.write(f"{time.strftime('%H:%M:%S')} {name}\n")
         except OSError:
             pass
     if name == "web_search":
@@ -199,7 +201,7 @@ def handle(req: dict):
             text = dispatch_tool(name, args)
             is_error = False
         except Exception as e:  # surface as a tool error, not a protocol crash
-            log(f"tool {name} failed: {e}")
+            log(f"tool {name} failed: {type(e).__name__}")  # the message can hold the URL
             text = f"Error running {name}: {e}"
             is_error = True
         return {"jsonrpc": "2.0", "id": rid, "result": {

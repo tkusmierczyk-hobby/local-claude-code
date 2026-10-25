@@ -43,6 +43,7 @@
 #                                      (default: ~/.local-claude/CLAUDE.md, if present)
 #   LOCAL_SEARCH=0                     disable the local web-search MCP server
 #   LOCAL_BUILTIN_WEBFETCH=1           also allow Claude Code's own WebFetch (off by default)
+#   LOCAL_SAVE_SESSIONS=1              save transcripts and prompt history (off: nothing is stored)
 #   LOCAL_RULES=""                     disable small-model rule injection
 
 set -euo pipefail
@@ -621,6 +622,12 @@ export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1  # no telemetry/update/error p
 export DISABLE_AUTOUPDATER=1
 export DISABLE_TELEMETRY=1
 export DISABLE_ERROR_REPORTING=1
+# ...and store none of the conversation. Claude Code otherwise writes every
+# session to ~/.claude/projects/ (the transcript /resume reads) and every prompt
+# to ~/.claude/history.jsonl. This one variable stops both, in interactive
+# sessions too; local sessions then cannot be resumed. LOCAL_SAVE_SESSIONS=1
+# keeps them.
+[[ "${LOCAL_SAVE_SESSIONS:-0}" == "1" ]] || export CLAUDE_CODE_SKIP_PROMPT_HISTORY=1
 
 # Marks this session for hooks that only apply to the local stack
 export LOCAL_CLAUDE=1
