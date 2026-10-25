@@ -26,6 +26,7 @@ The repo itself stays wherever you cloned it; the symlink resolves back to it, s
 ```bash
 ./install.sh --backend cpu      # force a backend: vulkan | cpu | metal
 ./install.sh --build b10988     # pin a llama.cpp build instead of the newest
+./install.sh --update           # move to the newest llama.cpp release
 ./install.sh --no-symlink       # don't touch ~/.local/bin
 ```
 
@@ -105,8 +106,12 @@ and the port is free. Run it any time something looks wrong.
 
 ```bash
 git pull
-./install.sh          # picks up a newer llama.cpp; keeps your models and tuning
+./install.sh --update # picks up a newer llama.cpp; keeps your models
 ```
+
+Without `--update` (or `--build`/`--backend`), re-running the installer keeps the
+build in use, so a source-built CUDA backend is never swapped for a newer Vulkan
+release behind your back.
 
 Old builds are left in place, so rolling back is repointing the symlink:
 

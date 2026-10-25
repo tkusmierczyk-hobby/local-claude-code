@@ -8,6 +8,7 @@
 #   ./install.sh                 # detect hardware, install, verify
 #   ./install.sh --backend cpu   # force a backend (vulkan|cpu|metal)
 #   ./install.sh --build BUILD   # pin a llama.cpp build instead of the latest
+#   ./install.sh --update        # move to the newest llama.cpp release
 #   ./install.sh --no-symlink    # skip ~/.local/bin/local-claude
 #
 # Claude Code itself is assumed to be installed already.
@@ -18,13 +19,14 @@ PREFIX="${LOCAL_CLAUDE_PREFIX:-$HOME/.local/share/local-claude}"
 STATE_DIR="${LOCAL_CLAUDE_STATE:-$HOME/.local-claude}"
 MODELS_DIR="${MODELS_DIR:-$HOME/models}"
 BIN_DIR="$HOME/.local/bin"
-BACKEND_OVERRIDE=""; BUILD=""; DO_SYMLINK=1
+BACKEND_OVERRIDE=""; BUILD=""; DO_SYMLINK=1; UPDATE=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --backend) BACKEND_OVERRIDE="$2"; shift 2 ;;
     --build)   BUILD="$2"; shift 2 ;;
     --no-symlink) DO_SYMLINK=0; shift ;;
+    --update)  UPDATE=1; shift ;;
     -h|--help) sed -n '2,14p' "$0"; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 1 ;;
   esac
@@ -68,8 +70,20 @@ esac
 # using the URL the API reports rather than constructing a filename. A pinned
 # build is fetched by its tag, however old; if it is already installed, the
 # network is not needed at all.
-TARBALL="" URL="" SIZE=0 SHA=""
-if [ -n "$BUILD" ] && [ -x "$PREFIX/$BUILD/llama-server" ]; then
+#
+# A build that already works stays in use unless asked otherwise: re-running the
+# installer used to repoint `current` at the newest release, silently replacing a
+# hand-built CUDA backend with Vulkan, and leaving the per-build tuning behind.
+# --update, --build and --backend each ask for a change.
+TARBALL="" URL="" SIZE=0 SHA="" KEEP=0 CURRENT=""
+if [ -x "$PREFIX/current/llama-server" ] \
+   && LD_LIBRARY_PATH="$PREFIX/current" "$PREFIX/current/llama-server" --version >/dev/null 2>&1; then
+  CURRENT="$(basename "$(readlink -f "$PREFIX/current")")"
+fi
+if [ -n "$CURRENT" ] && [ -z "$BUILD$BACKEND_OVERRIDE" ] && [ "$UPDATE" = 0 ]; then
+  KEEP=1; BUILD="$CURRENT"
+  info "build     $CURRENT (in use; ./install.sh --update moves to the newest release)"
+elif [ -n "$BUILD" ] && [ -x "$PREFIX/$BUILD/llama-server" ]; then
   info "build     $BUILD (already installed)"
 else
   if [ -n "$BUILD" ]; then
@@ -104,7 +118,10 @@ fi
 # ---- 3. install it -----------------------------------------------------------
 say "3/6  Installing llama.cpp (user-space, no root)"
 DEST="$PREFIX/$BUILD"
-if [ -x "$DEST/llama-server" ]; then
+if [ "$KEEP" = 1 ]; then
+  DEST="$(readlink -f "$PREFIX/current")"
+  info "keeping $DEST"
+elif [ -x "$DEST/llama-server" ]; then
   info "already installed at $DEST"
 else
   mkdir -p "$PREFIX/dl" "$DEST"
@@ -124,8 +141,14 @@ else
   chmod +x "$DEST"/llama-* 2>/dev/null || true
   info "installed to $DEST"
 fi
-ln -sfn "$DEST" "$PREFIX/current"
-info "current -> $DEST"
+if [ "$KEEP" = 0 ]; then
+  ln -sfn "$DEST" "$PREFIX/current"
+  info "current -> $DEST"
+  if [ -n "$CURRENT" ] && [ "$CURRENT" != "$BUILD" ]; then
+    info "note: switched from $CURRENT. Its tuning does not carry over: run"
+    info "      local-claude bench --tune. To go back: ln -sfn $PREFIX/$CURRENT $PREFIX/current"
+  fi
+fi
 
 VER="$(LD_LIBRARY_PATH="$PREFIX/current" "$PREFIX/current/llama-server" --version 2>&1 | head -1)"
 info "$VER"
@@ -184,7 +207,8 @@ fi
 say "6/6  Verifying"
 "$HERE/test/preflight.sh" || die "preflight failed — see the messages above"
 
-if [ "$HW_BACKEND" = vulkan ] && [ "$HW_GPU_NAME" != "${HW_GPU_NAME#NVIDIA}" ]; then
+if [ "$HW_BACKEND" = vulkan ] && [ "$HW_GPU_NAME" != "${HW_GPU_NAME#NVIDIA}" ] \
+   && [ "${BUILD%-cuda}" = "$BUILD" ]; then
   say "Optional: a CUDA build is faster"
   info "Vulkan needs nothing installed, which is why it is the default. On the"
   info "reference machine a source-built CUDA backend was worth ~20% decode and"
