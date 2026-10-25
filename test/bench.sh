@@ -13,6 +13,13 @@
 # at the smallest N that still starts, and kept only if it buys >= 10% prefill
 # for <= 5% decode.
 #
+# "Starts" is not enough. The server keeps allocating GPU memory after start —
+# CUDA graphs for each new batch shape — and a split that left 395 MiB free
+# crashed mid-session with "CUDA error: out of memory" (cudaGraphInstantiate),
+# while one layer more in RAM (855 MiB free) did not. So a candidate must also
+# leave LOCAL_VRAM_MARGIN MiB free after its test request (default 768;
+# checked where nvidia-smi exists).
+#
 # The sweep drives the real llama-server through `local-claude start`, not
 # llama-bench: context size, slot count and KV type all consume the VRAM the
 # expert layers are competing for, and llama-bench sizes its KV cache from
@@ -44,6 +51,7 @@ mkdir -p "$STATE_DIR"
 
 MODEL=""; CTX="${LOCAL_CTX:-${HWENV_LOCAL_CTX:-131072}}"; SWEEP=""; TUNE=0
 BASE_UB="${LOCAL_UBATCH:-${HWENV_LOCAL_UBATCH:-2048}}"; UBATCHES="$BASE_UB,$(( BASE_UB * 2 ))"
+MARGIN="${LOCAL_VRAM_MARGIN:-768}"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --tune)   TUNE=1; shift ;;
@@ -51,7 +59,7 @@ while [[ $# -gt 0 ]]; do
     --model)  MODEL="$2"; shift 2 ;;
     --ctx)    CTX="$2"; shift 2 ;;
     --ubatch) UBATCHES="$2"; shift 2 ;;
-    -h|--help) sed -n '2,26p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,33p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 1 ;;
   esac
 done
@@ -101,16 +109,21 @@ IFS=',' read -ra UBS <<< "$UBATCHES"
 row() { printf "%-10s %7s %10s %14s %13s %10s%s\n" "$@"; }
 row "n_cpu_moe" "ubatch" "prompt tok" "prefill t/s" "decode t/s" "VRAM" ""
 
-# try N UBATCH — start the real server with this split; sets ptok pp tg vram.
+# try N UBATCH — start the real server with this split; sets ptok pp tg vram vfree.
 try() {
-  ptok="" pp="" tg="" vram=""
+  ptok="" pp="" tg="" vram="" vfree=""
   "$HERE/local-claude" stop >/dev/null 2>&1
   sleep 2
   LOCAL_NCMOE="$1" LOCAL_UBATCH="$2" LOCAL_CTX="$CTX" LOCAL_MODEL_FILE="$MODEL" \
     "$HERE/local-claude" start >/dev/null 2>&1 || return 1
   read -r ptok pp tg <<< "$(measure)"
-  vram="$(nvidia-smi --query-gpu=memory.used --format=csv,noheader 2>/dev/null | head -1 | tr -d ' ')"
+  local used total
+  read -r used total <<< "$(nvidia-smi --query-gpu=memory.used,memory.total --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -d ',')"
+  [[ "$used" =~ ^[0-9]+$ ]] && { vram="${used}MiB"; vfree=$(( total - used )); }
+  return 0
 }
+# tight — the last try left less than MARGIN MiB free (unknown counts as fine)
+tight() { [[ -n "$vfree" && "$vfree" -lt "$MARGIN" ]]; }
 
 best_n=""; best_tg=0; best_pp=0; best_ub="${UBS[0]}"
 IFS=',' read -ra VALUES <<< "$SWEEP"
@@ -122,6 +135,10 @@ for n in "${VALUES[@]}"; do
   fi
   if [[ -z "${tg:-}" ]]; then
     row "$n" "${UBS[0]}" "-" "-" "-" "-" "  request failed — stopping sweep"
+    break
+  fi
+  if tight; then
+    row "$n" "${UBS[0]}" "$ptok" "$pp" "$tg" "$vram" "  only $vfree MiB free (< $MARGIN) — stopping sweep"
     break
   fi
   note=""
@@ -141,6 +158,10 @@ if [[ "$TUNE" == "1" && -n "$best_n" ]]; then
         continue
       fi
       [[ -n "${tg:-}" ]] || { row "$n" "$ub" "-" "-" "-" "-" "  request failed"; break; }
+      if tight; then
+        row "$n" "$ub" "$ptok" "$pp" "$tg" "$vram" "  only $vfree MiB free (< $MARGIN)"
+        continue
+      fi
       note="  (kept the smaller micro-batch: not worth the decode)"
       if LC_ALL=C awk -v p="$pp" -v bp="$best_pp" -v t="$tg" -v bt="$best_tg" \
            'BEGIN{exit !(p >= 1.10*bp && t >= 0.95*bt)}'; then

@@ -18,6 +18,13 @@ neighbour, such as an idle PyTorch process, is enough to push out a tuned 4096
 micro-batch; the launcher then prints `retrying at 2048` and starts anyway, with
 slower prefill.
 
+**It started, then died mid-session.** If `~/.local-claude/llama-server.log` ends
+with `CUDA error: out of memory` (often in `cudaGraphInstantiate`), the split left
+too little VRAM for what the server allocates while running. Re-run
+`local-claude bench --tune`, which keeps a reserve (`LOCAL_VRAM_MARGIN`, 768 MiB);
+raise the reserve if it happens again. `GGML_CUDA_DISABLE_GRAPHS=1 local-claude`
+also avoids it, at about 4% of decode speed.
+
 **It picked the wrong GPU.** Machines with integrated graphics usually enumerate
 them first. The launcher caches its choice:
 

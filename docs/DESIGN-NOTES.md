@@ -122,6 +122,10 @@ Tried and rejected:
 - **Restricting threads to the P-cores without strict placement.** As fast when
   idle, but under background load the threads pile onto the same cores: decode
   fell to 14 tok/s with 8 busy processes, against 36.5 pinned.
+- **`--n-cpu-moe 36` with the 4096 micro-batch.** It started, benchmarked well and
+  passed the agentic test, but with 395 MiB of VRAM free it crashed mid-session
+  when the CUDA backend allocated another graph. 37 costs ~2% of prefill and
+  leaves 855 MiB. The tuner now requires a reserve.
 - **Pinned expert memory by default** (`--load-mode none`). +7% prefill, but ~17 GB
   the kernel cannot reclaim on a machine that also runs experiments. Opt-in as
   `LOCAL_LOAD_MODE=none`.

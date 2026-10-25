@@ -54,18 +54,26 @@ GPU once per micro-batch (llama.cpp does this for any batch of 32+ tokens; see
 [MOE-OFFLOAD.md](MOE-OFFLOAD.md#the-flag-that-mattered-more-than-the-tuning)), so
 a larger micro-batch pays that copy fewer times per token.
 
-4096 does fit once two more expert layers move to RAM, and that trade pays: on the
-CUDA build with pinned threads, `--n-cpu-moe 36 --ubatch-size 4096` reads a
-9.5k-token prompt at 1068 tok/s against 854 at 34 / 2048, and decodes at 38.9
-against 39.3. On a 65k-token prompt it is 1007 against 791 tok/s. So
-`bench --tune` tunes the pair: after the split sweep it tries a doubled
-micro-batch at the smallest split that starts, and keeps it if it gains ≥ 10%
-prefill for ≤ 5% decode. Until you tune, the micro-batch comes from `install.sh`
-(by VRAM).
+4096 fits once more expert layers move to RAM, and that trade pays: on the CUDA
+build with pinned threads, `--n-cpu-moe 37 --ubatch-size 4096` reads a 9.5k-token
+prompt at 1056 tok/s against 854 at 34 / 2048, and decodes at 38.8 against 39.5.
+On a 65k-token prompt it is 1005 against 791 tok/s. So `bench --tune` tunes the
+pair: after the split sweep it tries a doubled micro-batch at the smallest split
+that qualifies, and keeps it if it gains ≥ 10% prefill for ≤ 5% decode. Until you
+tune, the micro-batch comes from `install.sh` (by VRAM).
 
-The tuned pair leaves ~420 MiB of VRAM spare. If something else holds more when
-the server starts, the launcher says `retrying at 2048` and starts with the
-smaller micro-batch; an explicit `LOCAL_UBATCH` is not second-guessed and fails.
+**Starting is not enough: the tuner keeps VRAM in reserve.** The server allocates
+GPU memory after start too — the CUDA backend records a graph for each new batch
+shape. `--n-cpu-moe 36 --ubatch-size 4096` started, benchmarked fine and passed
+the agentic test with 395 MiB free, then crashed on a later request with
+`CUDA error: out of memory`. One more layer in RAM left 855 MiB and survived the
+same requests. So `bench --tune` rejects any split that leaves less than
+`LOCAL_VRAM_MARGIN` (768 MiB) free after its test request. On the reference
+machine the old 34 / 2048 left only 447 MiB and is rejected too.
+
+If something else holds VRAM when the server starts, the launcher says
+`retrying at 2048` and starts with the smaller micro-batch; an explicit
+`LOCAL_UBATCH` is not second-guessed and fails.
 
 ## Threads — one per performance core, pinned
 
@@ -125,6 +133,7 @@ busy-loop load is CPU-only; a memory-bandwidth-heavy neighbour is untested.
 | `LOCAL_START_TIMEOUT` | 600 | Seconds to wait for the server to come up; a 22 GB model reads from disk on first load |
 | `LOCAL_STOP_TIMEOUT` | 60 | Half-seconds to wait for it to exit before `SIGKILL`. It must release its VRAM before the next one starts |
 | `LOCAL_NCMOE_FALLBACK` | model's layer count | Expert split used before `bench --tune` has measured anything |
+| `LOCAL_VRAM_MARGIN` | 768 | MiB of VRAM `bench --tune` requires free after its test request; raise it if the server still dies mid-session |
 | `LOCAL_SEARCH_CONFIG` | `~/.local-claude/search-mcp.json` | Path to the MCP config `install.sh` generates |
 | `LOCAL_LLAMA_ARGS` | — | Extra flags passed straight to `llama-server` |
 | `LOCAL_CLAUDE_PREFIX` / `LOCAL_CLAUDE_STATE` / `MODELS_DIR` | see [INSTALL](INSTALL.md#what-goes-where) | Relocate the install, state or models |

@@ -195,8 +195,10 @@ near-proportional gains in the table above are its signature: a bigger micro-bat
 pays it fewer times per token.
 
 The corrected view predicted the next step. 4096 does not fit at `--n-cpu-moe 34`,
-but two more expert layers in RAM free room for its compute buffer, and the trade
-pays: 1068 against 854 tok/s prefill for 38.9 against 39.3 tok/s decode (CUDA build).
+but more expert layers in RAM free room for its compute buffer, and the trade pays:
+at `--n-cpu-moe 37`, 1056 against 854 tok/s prefill for 38.8 against 39.5 tok/s
+decode (CUDA build). 36 also starts, but leaves too little VRAM for what the server
+allocates later and crashed mid-session; see TUNING.md.
 `bench --tune` now tunes the pair. Copying from pinned rather than memory-mapped
 pages (`LOCAL_LOAD_MODE=none`) is worth another ~7%, at the price of locking the
 experts in RAM.
@@ -217,17 +219,18 @@ API conformance is 7/7 on both, against the previous whole-layer stack's 76 s an
 ## Re-tuned, October 2026
 
 Same machine, CUDA build, after pinning one thread per performance core and
-tuning the micro-batch with the split. The 9.5k-token figures are means of 3 runs;
-the 65k-token and end-to-end figures are single runs.
+tuning the micro-batch with the split. The "before" 9.5k-token figures are means
+of 3 runs, the "after" ones of 2; the 65k-token and end-to-end figures are single
+runs.
 
-| | before: 34 / 2048, 16 threads | after: 36 / 4096, 8 pinned |
+| | before: 34 / 2048, 16 threads | after: 37 / 4096, 8 pinned |
 |---|---|---|
-| prefill, 9.5k-token prompt | 859 tok/s | **1079** |
-| prefill, 65k-token prompt | 791 tok/s | **1007** |
-| decode at 9.5k context | 35.3 tok/s | **38.3** |
-| decode at 65k context | 27.7 tok/s | **29.8** |
-| VRAM | 7740 MiB | 7768 MiB |
-| agentic end-to-end | 40 s | **35 s** |
+| prefill, 9.5k-token prompt | 859 tok/s | **1062** |
+| prefill, 65k-token prompt | 791 tok/s | **1005** |
+| decode at 9.5k context | 35.3 tok/s | **38.2** |
+| decode at 65k context | 27.7 tok/s | **29.9** |
+| peak VRAM | 7740 MiB | 7333 MiB |
+| agentic end-to-end | 40 s | **29 s** |
 
 ## Backend, revisited
 

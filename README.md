@@ -110,8 +110,8 @@ worth ~20% of decode and ~50% of prefill here, but it is a source build — see
 is what `install.sh` sets up by default.
 
 Re-tuned since, with one thread pinned per performance core and
-`--n-cpu-moe 36 --ubatch-size 4096`, the CUDA build decodes at ~38 tok/s, reads a
-65k-token prompt at ~1000 tok/s, and does the agentic task in 35 s — see
+`--n-cpu-moe 37 --ubatch-size 4096`, the CUDA build decodes at ~38 tok/s, reads a
+65k-token prompt at ~1000 tok/s, and does the agentic task in about 30 s — see
 [docs/TUNING.md](docs/TUNING.md).
 
 **Two flags did most of the work, and the famous one was not the bigger.**
