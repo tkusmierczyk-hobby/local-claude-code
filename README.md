@@ -2,7 +2,9 @@
 
 Run Claude Code against a model on your own machine. Same CLI, same tools,
 permissions, hooks and subagents — but inference happens locally, and nothing
-you type is sent anywhere at runtime.
+contacts Anthropic at runtime. The only outside traffic is web search when the
+model uses it: queries go to DuckDuckGo and pages are fetched from the sites
+themselves (`LOCAL_SEARCH=0` turns that off).
 
 The interesting part is what makes it usable: a 35-billion-parameter model on an
 8 GB graphics card, at a speed you can actually work with. That is not
@@ -152,7 +154,7 @@ model. The stack compensates automatically rather than hoping:
 | Operating rules injected into the system prompt | `LOCAL_RULES=""` to disable |
 | Syntax errors fed straight back to the model | `hooks/syntax_check.sh` on Write/Edit |
 | Cannot declare "done" while `.claude/verify.sh` fails | `hooks/verify_on_stop.sh`, max 2 retries |
-| Web search, since the built-in one runs server-side | local MCP server, `LOCAL_SEARCH=0` to disable |
+| Web search and fetch through a local server; Claude Code's own web tools are off, since its fetch asks Anthropic about every domain | `LOCAL_SEARCH=0` for no web access at all |
 | Your global `~/.claude/CLAUDE.md` is skipped: it is written for the cloud model and costs context | `LOCAL_GLOBAL_CLAUDE_MD=1` to load it anyway |
 | Instructions of your own for every local session, written for the local model | `~/.local-claude/CLAUDE.md`, if you create it |
 | Best-of-N attempts gated on your acceptance test | `local-claude attempts 3 "..."` |

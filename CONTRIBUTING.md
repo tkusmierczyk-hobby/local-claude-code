@@ -20,8 +20,9 @@ client sends message shapes curl does not. Run the end-to-end test too.
    machines they do not administer.
 2. **Nothing machine-specific in the repo.** Paths, tuned values, device choices
    and generated configs live in `~/.local-claude`. `install.sh` writes them.
-3. **Inference stays local.** The only network use is model downloads and the
-   opt-out web-search tool.
+3. **Inference stays local, and nothing contacts Anthropic.** The only network use
+   is model downloads and the opt-out web-search tool; Claude Code's own web tools
+   stay disabled.
 4. **Validate llama.cpp flags** against `llama-server --help` before shipping
    them — a bad flag means the server refuses to start, with a confusing error.
 5. **Measure claims.** Throughput numbers in docs should come from

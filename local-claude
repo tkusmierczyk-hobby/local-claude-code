@@ -643,9 +643,10 @@ LOCAL_RULES="${LOCAL_RULES-$DEFAULT_RULES}"
 EXTRA_ARGS=()
 
 # ---- Web search --------------------------------------------------------------
-# The built-in WebSearch/WebFetch run on Anthropic's servers, so they are dead
-# against a local backend. Instead we load a tiny local MCP server that provides
-# web_search + web_fetch (DuckDuckGo, keyless). On by default; LOCAL_SEARCH=0 off.
+# Web access goes through a tiny local MCP server instead of Claude Code's own
+# tools: web_search (DuckDuckGo's keyless "lite" page) and web_fetch (the page
+# itself). Nothing else is contacted. On by default; LOCAL_SEARCH=0 means no web
+# access at all, since the built-in WebSearch/WebFetch are switched off below.
 SEARCH_MCP="${LOCAL_SEARCH_CONFIG:-$STATE_DIR/search-mcp.json}"
 if [[ "${LOCAL_SEARCH:-1}" != "0" ]] && [[ -f "$SEARCH_MCP" ]]; then
   EXTRA_ARGS+=(--mcp-config "$SEARCH_MCP")
@@ -669,13 +670,28 @@ fi
 # Keep the context window lean: only the MCP servers we pass explicitly
 # (i.e. the search server), never project/user-discovered ones — unless opted in.
 [[ "${LOCAL_MCP:-0}" != "1" ]] && EXTRA_ARGS+=(--strict-mcp-config)
+
+# Nothing in a local session contacts Anthropic. With telemetry, error reports
+# and updates off (above), the one route left was the built-in WebFetch: before
+# each fetch it asks api.anthropic.com about the domain. Both built-in web tools
+# are switched off, and the domain check is skipped too, in case one is re-enabled.
+EXTRA_ARGS+=(--disallowedTools "WebFetch,WebSearch")
+
 # The same goes for your global ~/.claude/CLAUDE.md: it is written for the cloud
 # model, can run to thousands of tokens, and Claude Code loads it in every
 # session — under $HOME a second way too, as a parent folder's .claude/CLAUDE.md.
 # Excluding it by path covers both; the project's own CLAUDE.md still loads.
+EXCLUDE=""
 if [[ "${LOCAL_GLOBAL_CLAUDE_MD:-0}" != "1" ]]; then
-  EXTRA_ARGS+=(--settings "$(python3 -c 'import json, sys; print(json.dumps({"claudeMdExcludes": [sys.argv[1]]}))' \
-                             "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/CLAUDE.md")")
+  EXCLUDE="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/CLAUDE.md"
+fi
+EXTRA_ARGS+=(--settings "$(python3 -c '
+import json, sys
+s = {"skipWebFetchPreflight": True}
+if sys.argv[1]:
+    s["claudeMdExcludes"] = [sys.argv[1]]
+print(json.dumps(s))' "$EXCLUDE")")
+if [[ -n "$EXCLUDE" ]]; then
   # A --settings of your own replaces this one rather than adding to it.
   for a in "$@"; do
     case "$a" in --settings|--settings=*)

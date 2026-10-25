@@ -107,7 +107,7 @@ busy-loop load is CPU-only; a memory-bandwidth-heavy neighbour is untested.
 | `LOCAL_MMPROJ_DEVICE` | `cpu` | `gpu` offloads the vision tower, costing ~1 GB of VRAM the experts want |
 | `LOCAL_DEVICE` | autodetected | Force a GPU; never the integrated one |
 | `LOCAL_TEMPLATE` | auto-patched | `0` uses the model's stock chat template — see DESIGN-NOTES |
-| `LOCAL_SEARCH` | 1 | `0` drops the web-search MCP server |
+| `LOCAL_SEARCH` | 1 | `0` drops the web-search MCP server, leaving no web access at all: Claude Code's own web tools are always off |
 | `LOCAL_CLAUDE_MD` | `~/.local-claude/CLAUDE.md` | Your standing instructions for local sessions, in every project: the local counterpart of `~/.claude/CLAUDE.md`. Loaded only if the file exists; keep it short, it is sent with every session |
 | `LOCAL_GLOBAL_CLAUDE_MD` | 0 | `1` also loads your global `~/.claude/CLAUDE.md`, which local sessions skip by default (~8k tokens on the reference machine) |
 | `LOCAL_RULES` | built-in | `""` disables the injected operating rules |
