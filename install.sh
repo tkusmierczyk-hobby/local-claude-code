@@ -159,14 +159,17 @@ elif [ -x "$DEST/llama-server" ]; then
 else
   mkdir -p "$PREFIX/dl" "$DEST"
   fetch "$URL" "$PREFIX/dl/$TARBALL" "$SIZE" "$SHA"
-  tar xzf "$PREFIX/dl/$TARBALL" -C "$DEST" --strip-components=1 2>/dev/null \
-    || tar xzf "$PREFIX/dl/$TARBALL" -C "$DEST"
-  # Release layouts have varied; find the binaries wherever they landed.
-  if [ ! -x "$DEST/llama-server" ]; then
-    found="$(find "$DEST" -name llama-server -type f | head -1)"
-    [ -n "$found" ] || die "llama-server not found inside $TARBALL"
-    cp -a "$(dirname "$found")"/* "$DEST"/ 2>/dev/null || true
-  fi
+  # Unpack into a scratch directory, then take the directory that holds
+  # llama-server. Release layouts have varied (a top-level folder, build/bin/,
+  # or none), and guessing with --strip-components can strip the binaries away
+  # while tar still reports success.
+  unpack="$(mktemp -d "$PREFIX/unpack.XXXXXX")"
+  tar xzf "$PREFIX/dl/$TARBALL" -C "$unpack" \
+    || { rm -rf "${unpack:?}"; die "could not unpack $TARBALL (disk full?)"; }
+  found="$(find "$unpack" -name llama-server -type f | head -1)"
+  [ -n "$found" ] || { rm -rf "${unpack:?}"; die "llama-server not found inside $TARBALL"; }
+  cp -a "$(dirname "$found")"/. "$DEST"/
+  rm -rf "${unpack:?}"
   chmod +x "$DEST"/llama-* 2>/dev/null || true
   info "installed to $DEST"
 fi
