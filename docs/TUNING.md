@@ -9,8 +9,9 @@ local-claude bench --tune
 ```
 
 This starts the real server at each candidate split, times a long-prompt request,
-stops at the first value that will not allocate, and writes the winner to
-`~/.local-claude/ncmoe.<build>`, where the launcher reads it. It measures the actual server — same context, slots and
+stops at the first value that will not allocate, then tries a doubled micro-batch
+(below), and writes the winners to `~/.local-claude/ncmoe.<build>` and
+`ubatch.<build>`, where the launcher reads them. It measures the actual server — same context, slots and
 KV type you run — because all three consume the VRAM the expert layers compete
 for, and `llama-bench` would size its KV cache from its own arguments instead.
 
@@ -45,13 +46,25 @@ Same split, varying the micro-batch:
 | 512 — llama.cpp's default | 231.9 | 30.5 |
 | 1024 | 391.8 | 31.6 |
 | **2048** | **648.1** | 31.0 |
-| 3072 / 4096 | — | compute buffer no longer fits |
+| 3072 / 4096 | — | compute buffer no longer fits at this split |
 
 **2.8× prefill, decode untouched.** The 512 default is sized for a model that
 lives on the GPU. With experts on the CPU, prefill is bound by expert matrix
 multiplies, and a larger micro-batch loads each expert once and reuses it across
-more of the batch. `install.sh` sets this from your VRAM; raise it if you have
-headroom, and re-check after changing the split.
+more of the batch.
+
+4096 does fit once two more expert layers move to RAM, and that trade pays: on the
+CUDA build with pinned threads, `--n-cpu-moe 36 --ubatch-size 4096` reads a
+9.5k-token prompt at 1068 tok/s against 854 at 34 / 2048, and decodes at 38.9
+against 39.3. On a 65k-token prompt it is 1007 against 791 tok/s. So
+`bench --tune` tunes the pair: after the split sweep it tries a doubled
+micro-batch at the smallest split that starts, and keeps it if it gains ≥ 10%
+prefill for ≤ 5% decode. Until you tune, the micro-batch comes from `install.sh`
+(by VRAM).
+
+The tuned pair leaves ~420 MiB of VRAM spare. If something else holds more when
+the server starts, the launcher says `retrying at 2048` and starts with the
+smaller micro-batch; an explicit `LOCAL_UBATCH` is not second-guessed and fails.
 
 ## Threads — one per performance core, pinned
 
@@ -81,7 +94,7 @@ busy-loop load is CPU-only; a memory-bandwidth-heavy neighbour is untested.
 |---|---|---|
 | `LOCAL_CTX` | from VRAM (131072 on 8 GB) | Must exceed 100k, or Claude Code overruns the server before it auto-compacts |
 | `LOCAL_NCMOE` | tuned value | Override the sweep |
-| `LOCAL_UBATCH` | from VRAM (2048 on 8 GB) | See above — the single biggest prefill lever |
+| `LOCAL_UBATCH` | tuned (4096 here), else from VRAM | See above — the single biggest prefill lever |
 | `LOCAL_KV_TYPE` | `q8_0` | `f16` doubles KV memory for little quality gain |
 | `LOCAL_SLOTS` | 2 | Slots share one KV pool; the second stops background calls evicting your conversation's prefix |
 | `LOCAL_THREADS` | one per performance core | Setting it also turns pinning off — see Threads above |
@@ -101,7 +114,7 @@ busy-loop load is CPU-only; a memory-bandwidth-heavy neighbour is untested.
 | Env | Default | What it does |
 |---|---|---|
 | `LOCAL_HOST` / `LOCAL_PORT` | `127.0.0.1` / `8080` | Where the server listens. Change the port if something else owns 8080 |
-| `LOCAL_BATCH` | 2048 | Logical batch size; `--ubatch-size` is the one that matters |
+| `LOCAL_BATCH` | the larger of 2048 and the micro-batch | Logical batch size. llama.cpp caps `--ubatch-size` to it, so it must not be smaller |
 | `CLAUDE_CODE_MAX_OUTPUT_TOKENS` | 32768 | Room for one reply. Too low truncates a long `Write` into invalid JSON — see [TROUBLESHOOTING](TROUBLESHOOTING.md) |
 | `API_TIMEOUT_MS` | 1800000 | 30 minutes. Must exceed the worst-case generation: 32k tokens at ~30 tok/s is ~18 minutes |
 | `LOCAL_START_TIMEOUT` | 600 | Seconds to wait for the server to come up; a 22 GB model reads from disk on first load |

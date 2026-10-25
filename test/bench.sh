@@ -7,6 +7,12 @@
 # at which point the server fails to start. The sweep walks N down and stops at
 # the first value that does not fit.
 #
+# Then it tries a doubled --ubatch-size. Each micro-batch of prompt copies the
+# RAM-resident experts to the GPU once, so a bigger one means fewer copies per
+# token, but its compute buffer takes VRAM from the expert layers: it is tried
+# at the smallest N that still starts, and kept only if it buys >= 10% prefill
+# for <= 5% decode.
+#
 # The sweep drives the real llama-server through `local-claude start`, not
 # llama-bench: context size, slot count and KV type all consume the VRAM the
 # expert layers are competing for, and llama-bench sizes its KV cache from
@@ -15,8 +21,8 @@
 #
 # Usage:
 #   ./bench.sh                       # measure the current/default configuration
-#   ./bench.sh --tune                # sweep --n-cpu-moe, store the winner
-#   ./bench.sh --tune --sweep 40,36,32,28
+#   ./bench.sh --tune                # sweep --n-cpu-moe and the micro-batch, store both
+#   ./bench.sh --tune --sweep 40,36,32,28 --ubatch 2048,4096
 #   ./bench.sh --model ~/models/x.gguf --ctx 65536
 set -uo pipefail
 
@@ -37,13 +43,15 @@ BASE="http://127.0.0.1:$PORT"
 mkdir -p "$STATE_DIR"
 
 MODEL=""; CTX="${LOCAL_CTX:-${HWENV_LOCAL_CTX:-131072}}"; SWEEP=""; TUNE=0
+BASE_UB="${LOCAL_UBATCH:-${HWENV_LOCAL_UBATCH:-2048}}"; UBATCHES="$BASE_UB,$(( BASE_UB * 2 ))"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --tune)   TUNE=1; shift ;;
     --sweep)  SWEEP="$2"; shift 2 ;;
     --model)  MODEL="$2"; shift 2 ;;
     --ctx)    CTX="$2"; shift 2 ;;
-    -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
+    --ubatch) UBATCHES="$2"; shift 2 ;;
+    -h|--help) sed -n '2,26p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 1 ;;
   esac
 done
@@ -89,39 +97,72 @@ print(f"{t['prompt_n']:.0f} {t['prompt_per_second']:.1f} {t['predicted_per_secon
 PY
 }
 
-printf "%-10s %10s %14s %13s %10s\n" "n_cpu_moe" "prompt tok" "prefill t/s" "decode t/s" "VRAM"
-best_n=""; best_tg=0
+IFS=',' read -ra UBS <<< "$UBATCHES"
+row() { printf "%-10s %7s %10s %14s %13s %10s%s\n" "$@"; }
+row "n_cpu_moe" "ubatch" "prompt tok" "prefill t/s" "decode t/s" "VRAM" ""
+
+# try N UBATCH — start the real server with this split; sets ptok pp tg vram.
+try() {
+  ptok="" pp="" tg="" vram=""
+  "$HERE/local-claude" stop >/dev/null 2>&1
+  sleep 2
+  LOCAL_NCMOE="$1" LOCAL_UBATCH="$2" LOCAL_CTX="$CTX" LOCAL_MODEL_FILE="$MODEL" \
+    "$HERE/local-claude" start >/dev/null 2>&1 || return 1
+  read -r ptok pp tg <<< "$(measure)"
+  vram="$(nvidia-smi --query-gpu=memory.used --format=csv,noheader 2>/dev/null | head -1 | tr -d ' ')"
+}
+
+best_n=""; best_tg=0; best_pp=0; best_ub="${UBS[0]}"
 IFS=',' read -ra VALUES <<< "$SWEEP"
 for n in "${VALUES[@]}"; do
   [[ "$n" -lt 0 ]] && continue
-  "$HERE/local-claude" stop >/dev/null 2>&1
-  sleep 2
-  if ! LOCAL_NCMOE="$n" LOCAL_CTX="$CTX" LOCAL_MODEL_FILE="$MODEL" \
-       "$HERE/local-claude" start >/dev/null 2>&1; then
-    printf "%-10s %10s %14s %13s %10s\n" "$n" "-" "-" "-" "did not start (out of VRAM) — stopping sweep"
+  if ! try "$n" "${UBS[0]}"; then
+    row "$n" "${UBS[0]}" "-" "-" "-" "-" "  did not start (out of VRAM) — stopping sweep"
     break
   fi
-  read -r ptok pp tg <<< "$(measure)"
-  vram="$(nvidia-smi --query-gpu=memory.used --format=csv,noheader 2>/dev/null | head -1 | tr -d ' ')"
   if [[ -z "${tg:-}" ]]; then
-    printf "%-10s %10s %14s %13s %10s\n" "$n" "-" "-" "-" "request failed — stopping sweep"
+    row "$n" "${UBS[0]}" "-" "-" "-" "-" "  request failed — stopping sweep"
     break
   fi
   note=""
   if LC_ALL=C awk -v a="$tg" -v b="$best_tg" 'BEGIN{exit !(a>b)}'; then
-    best_tg="$tg"; best_n="$n"; note="  <- best"
+    best_tg="$tg"; best_pp="$pp"; best_n="$n"; note="  <- best"
   fi
-  printf "%-10s %10s %14s %13s %10s%s\n" "$n" "$ptok" "$pp" "$tg" "$vram" "$note"
+  row "$n" "${UBS[0]}" "$ptok" "$pp" "$tg" "$vram" "$note"
   [[ "$TUNE" == "0" ]] && break   # single measurement unless sweeping
 done
+
+# Larger micro-batches, each at the smallest split that still starts.
+if [[ "$TUNE" == "1" && -n "$best_n" ]]; then
+  for ub in "${UBS[@]:1}"; do
+    for (( n = best_n; n <= best_n + 4 && n <= LAYERS; n++ )); do
+      if ! try "$n" "$ub"; then
+        row "$n" "$ub" "-" "-" "-" "-" "  did not start"
+        continue
+      fi
+      [[ -n "${tg:-}" ]] || { row "$n" "$ub" "-" "-" "-" "-" "  request failed"; break; }
+      note="  (kept the smaller micro-batch: not worth the decode)"
+      if LC_ALL=C awk -v p="$pp" -v bp="$best_pp" -v t="$tg" -v bt="$best_tg" \
+           'BEGIN{exit !(p >= 1.10*bp && t >= 0.95*bt)}'; then
+        best_n="$n"; best_ub="$ub"; best_pp="$pp"; best_tg="$tg"; note="  <- best"
+      fi
+      row "$n" "$ub" "$ptok" "$pp" "$tg" "$vram" "$note"
+      break
+    done
+  done
+fi
 
 echo
 if [[ "$TUNE" == "1" && -n "$best_n" ]]; then
   # keyed by build: backends have different VRAM footprints for the same model
-  cache="$STATE_DIR/ncmoe.$(basename "$(readlink -f "$LLAMA_DIR" 2>/dev/null || echo "$LLAMA_DIR")")"
-  echo "$best_n" > "$cache"
+  build="$(basename "$(readlink -f "$LLAMA_DIR" 2>/dev/null || echo "$LLAMA_DIR")")"
+  echo "$best_n" > "$STATE_DIR/ncmoe.$build"
+  echo "$best_ub" > "$STATE_DIR/ubatch.$build"
   echo "$best_n" > "$STATE_DIR/ncmoe"
-  echo "tuned: --n-cpu-moe $best_n ($best_tg tok/s decode) -> $cache"
-  echo "the launcher picks this up on the next start"
+  echo "tuned: --n-cpu-moe $best_n --ubatch-size $best_ub ($best_pp tok/s prefill, $best_tg tok/s decode)"
+  echo "       -> $STATE_DIR/ncmoe.$build, $STATE_DIR/ubatch.$build"
+  # A server left running would keep serving the last configuration tried.
+  "$HERE/local-claude" stop >/dev/null 2>&1
+  echo "the launcher uses them from the next start"
 fi
 free -g | awk '/^Mem:/ {printf "ram: %d GB used / %d GB total\n", $3, $2}'

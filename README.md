@@ -62,7 +62,7 @@ local-claude -p "prompt"          # print mode
 local-claude status               # what is loaded, how it is split, VRAM/RAM
 local-claude models               # local models + download progress
 local-claude start / stop         # manage the server without launching Claude
-local-claude bench --tune         # sweep --n-cpu-moe, store the winner
+local-claude bench --tune         # sweep --n-cpu-moe and --ubatch-size, store both
 local-claude pull <repo> <file> [sha256]
 local-claude init                 # scaffold hooks + CLAUDE.md into another project
 local-claude attempts N "task"    # best-of-N, gated on .claude/verify.sh

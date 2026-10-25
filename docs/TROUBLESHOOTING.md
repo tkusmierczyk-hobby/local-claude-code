@@ -9,11 +9,14 @@ needing a model loaded.
 card. Delete the tuned value and re-measure:
 
 ```bash
-rm -f ~/.local-claude/ncmoe ~/.local-claude/ncmoe.* && local-claude bench --tune
+rm -f ~/.local-claude/ncmoe ~/.local-claude/ncmoe.* ~/.local-claude/ubatch.* && local-claude bench --tune
 ```
 
 **Something else holds the GPU.** A previous server, or a benchmark run, may still
-own the VRAM. `local-claude stop`, then check with `nvidia-smi`.
+own the VRAM. `local-claude stop`, then check with `nvidia-smi`. A smaller
+neighbour, such as an idle PyTorch process, is enough to push out a tuned 4096
+micro-batch; the launcher then prints `retrying at 2048` and starts anyway, with
+slower prefill.
 
 **It picked the wrong GPU.** Machines with integrated graphics usually enumerate
 them first. The launcher caches its choice:

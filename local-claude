@@ -19,7 +19,7 @@
 #   ./local-claude status                     # backend, model, tuning, VRAM
 #   ./local-claude start                      # start the server without launching Claude
 #   ./local-claude stop                       # stop the inference server
-#   ./local-claude bench [--tune]             # measure tok/s; --tune picks --n-cpu-moe
+#   ./local-claude bench [--tune]             # measure tok/s; --tune picks the split and micro-batch
 #   ./local-claude pull <repo> <file> [sha]   # resumable model download (slow-link safe)
 #   ./local-claude models                     # list local GGUFs
 #   ./local-claude init                       # scaffold hooks/CLAUDE.md in current project
@@ -31,6 +31,7 @@
 #   LOCAL_NCMOE=34                     expert layers kept in RAM (default: tuned value)
 #   LOCAL_THREADS=12                   CPU threads, unpinned (default: one per P-core, pinned)
 #   LOCAL_PIN=0                        do not pin threads to cores
+#   LOCAL_UBATCH=2048                  micro-batch (default: tuned value, else from VRAM)
 #   LOCAL_MMPROJ=~/models/mmproj-F16.gguf   enable vision (auto-detected if unambiguous)
 #   LOCAL_THINKING=0                   disable chain-of-thought (much faster turns)
 #   LOCAL_TEMPLATE=0                   use the model's stock chat template (see docs)
@@ -287,13 +288,26 @@ default_ncmoe() {
   echo "${LOCAL_NCMOE_FALLBACK:-99}"
 }
 
+# The micro-batch `bench --tune` chose. Each micro-batch of prompt copies the
+# RAM-resident experts to the GPU once, so a bigger one means fewer copies per
+# token — but its compute buffer takes VRAM from the expert layers, so it is
+# tuned together with the split and stored per build next to it.
+ubatch_cache() { echo "$STATE_DIR/ubatch.$(build_id)"; }
+
+default_ubatch() {
+  [[ -s "$(ubatch_cache)" ]] && { cat "$(ubatch_cache)"; return; }
+  echo "${HWENV_LOCAL_UBATCH:-2048}"
+}
+
 model_expert_count() {
   python3 "$HERE/bin/patch-gguf.py" "$1" --show 2>/dev/null \
     | awk -F= '/\.expert_count /{gsub(/ /,"",$2); print $2; exit}' | grep -E '^[0-9]+$' || echo 0
 }
 
+# start_llama MODEL [UBATCH] — the second argument is only used for the retry below.
 start_llama() {
   local model="$1"
+  local ubatch="${2:-${LOCAL_UBATCH:-$(default_ubatch)}}"
   local VISION_NOTE=""
   local ctx="${LOCAL_CTX:-${HWENV_LOCAL_CTX:-131072}}"
   local ncmoe="${LOCAL_NCMOE:-$(default_ncmoe "$model")}"
@@ -319,10 +333,10 @@ start_llama() {
     --cache-type-k "${LOCAL_KV_TYPE:-q8_0}"
     --cache-type-v "${LOCAL_KV_TYPE:-q8_0}"
     --threads "$THREADS" "${PIN_ARGS[@]}"
-    --batch-size "${LOCAL_BATCH:-2048}"
-    --ubatch-size "${LOCAL_UBATCH:-${HWENV_LOCAL_UBATCH:-2048}}"   # 512 (the default) costs 2.8x prefill
-                                            # here: with experts on the CPU, bigger
-                                            # micro-batches amortise the expert GEMMs
+    --batch-size "${LOCAL_BATCH:-$(( ubatch > 2048 ? ubatch : 2048 ))}"   # never below ubatch
+    --ubatch-size "$ubatch"       # 512 (the default) costs 2.8x prefill here: each
+                                  # micro-batch copies the CPU-side experts to the
+                                  # GPU once, so bigger ones copy less per token
     --cache-reuse 256             # reuse KV across turns instead of re-prefilling
     --cache-ram "${LOCAL_CACHE_RAM:-2048}"  # keep evicted prefixes, but the experts
                                             # need the RAM more than the cache does
@@ -377,7 +391,9 @@ start_llama() {
   fi
   [[ -n "${LOCAL_LLAMA_ARGS:-}" ]] && args+=(${LOCAL_LLAMA_ARGS})
 
-  echo "[local-claude] starting llama-server: $(basename "$model") ctx=$ctx (${slots} slots, shared) ncmoe=$ncmoe threads=$THREADS${PIN_CPUS:+ pinned to CPUs $PIN_CPUS} dev=${dev:-auto}${VISION_NOTE:-}" >&2
+  echo "[local-claude] starting llama-server: $(basename "$model") ctx=$ctx (${slots} slots, shared) ncmoe=$ncmoe ubatch=$ubatch threads=$THREADS${PIN_CPUS:+ pinned to CPUs $PIN_CPUS} dev=${dev:-auto}${VISION_NOTE:-}" >&2
+  local log_lines
+  log_lines="$(wc -l 2>/dev/null < "$STATE_DIR/llama-server.log" || echo 0)"
   LD_LIBRARY_PATH="$LLAMA_DIR" nohup "$LLAMA_DIR/llama-server" "${args[@]}" \
     >>"$STATE_DIR/llama-server.log" 2>&1 &
   echo $! > "$STATE_DIR/llama.pid"
@@ -388,6 +404,17 @@ start_llama() {
     kill -0 "$(cat "$STATE_DIR/llama.pid")" 2>/dev/null || break
     sleep 1
   done
+  # A tuned micro-batch above 2048 only fits next to the tuned split with the
+  # GPU otherwise empty. If another program holds VRAM today, or LOCAL_NCMOE was
+  # lowered, start at 2048 — slower prefill — rather than not at all. An
+  # explicit LOCAL_UBATCH is a choice, and fails loudly instead.
+  if [[ -z "${2:-}" && -z "${LOCAL_UBATCH:-}" && "$ubatch" -gt 2048 ]] \
+     && tail -n +"$(( log_lines + 1 ))" "$STATE_DIR/llama-server.log" \
+        | grep -qiE 'failed to allocate|out of memory'; then
+    echo "[local-claude] --ubatch-size $ubatch did not fit in VRAM; retrying at 2048" >&2
+    start_llama "$model" 2048
+    return
+  fi
   echo "[local-claude] llama-server failed to start; last lines of $STATE_DIR/llama-server.log:" >&2
   tail -15 "$STATE_DIR/llama-server.log" >&2
   return 1
@@ -454,6 +481,7 @@ if [[ "${1:-}" == "status" ]]; then
   fi
   echo "n-cpu-moe: ${LOCAL_NCMOE:-$(default_ncmoe)}$([[ -s "$(ncmoe_cache)" || -s "$STATE_DIR/ncmoe" ]] && echo ' (tuned)' || echo ' (default — run: local-claude bench --tune)')"
   echo "device:   ${LOCAL_DEVICE:-$(detect_device)}"
+  echo "ubatch:   ${LOCAL_UBATCH:-$(default_ubatch)}$([[ -s "$(ubatch_cache)" ]] && echo ' (tuned)')"
   pick_threads
   echo "threads:  $THREADS${PIN_CPUS:+, pinned to CPUs $PIN_CPUS}"
   nvidia-smi --query-gpu=name,memory.used,memory.total --format=csv,noheader 2>/dev/null | sed 's/^/gpu:      /'
