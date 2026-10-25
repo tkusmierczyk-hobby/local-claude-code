@@ -53,6 +53,28 @@ multiplies, and a larger micro-batch loads each expert once and reuses it across
 more of the batch. `install.sh` sets this from your VRAM; raise it if you have
 headroom, and re-check after changing the split.
 
+## Threads — one per performance core, pinned
+
+Decode multiplies the RAM-resident experts on the CPU with all threads in
+lockstep, so the slowest thread sets the pace. The launcher therefore starts one
+thread per performance core and pins each to its own core
+(`--cpu-mask … --cpu-strict 1`, chosen by `bin/pick-cpus.sh` from `/sys`). Prefill
+is unaffected: it runs on the GPU.
+
+Reference machine (i9-13900HX: 8 P-cores with hyperthreading, 16 E-cores), CUDA
+build, decode tok/s on a 9.5k-token prompt, with N busy-loop processes competing
+for the CPU:
+
+| Threads | idle | 4 busy | 8 busy | 16 busy |
+|---|---|---|---|---|
+| 16, unpinned (the old default) | 35.4 | 25–34 | 32.6 | 31.0 |
+| 8, pinned one per P-core | **39.2** | **37.2** | **36.5** | **35.1** |
+| 8, allowed on P-cores but free to move | 39.9 | 29.3 | 14.4 | 31–35 |
+
+Strict pinning is both faster and steadier. Letting the 8 threads move among the
+P-cores is not a compromise: under load they pile onto the same cores. The
+busy-loop load is CPU-only; a memory-bandwidth-heavy neighbour is untested.
+
 ## Everything else
 
 | Env | Default | When to touch it |
@@ -62,7 +84,8 @@ headroom, and re-check after changing the split.
 | `LOCAL_UBATCH` | from VRAM (2048 on 8 GB) | See above — the single biggest prefill lever |
 | `LOCAL_KV_TYPE` | `q8_0` | `f16` doubles KV memory for little quality gain |
 | `LOCAL_SLOTS` | 2 | Slots share one KV pool; the second stops background calls evicting your conversation's prefix |
-| `LOCAL_THREADS` | physical cores, capped at 16 | Memory bandwidth saturates around 8 threads; more rarely helps |
+| `LOCAL_THREADS` | one per performance core | Setting it also turns pinning off — see Threads above |
+| `LOCAL_PIN` | 1 | `0` leaves threads unpinned |
 | `LOCAL_THINKING` | 1 | `0` disables chain-of-thought — much faster turns, worse reasoning |
 | `LOCAL_MODEL_FILE` | best in `~/models` | Pick a model explicitly |
 | `LOCAL_MMPROJ` | auto-detected | Vision projector; see MODELS.md |

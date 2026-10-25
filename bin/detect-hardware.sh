@@ -34,10 +34,14 @@ else
   RAM_MB=$(awk '/^MemTotal:/ {printf "%d", $2/1024}' /proc/meminfo 2>/dev/null || echo 0)
   # Physical cores, not hyperthreads: memory bandwidth saturates well before
   # thread count does, and oversubscribing costs more than it gains.
-  CORES=$(lscpu 2>/dev/null | awk -F: '/^Core\(s\) per socket/{c=$2} /^Socket\(s\)/{s=$2} END{gsub(/ /,"",c); gsub(/ /,"",s); print (c*s>0)? c*s : 0}')
+  CORES=$(LC_ALL=C lscpu 2>/dev/null | awk -F: '/^Core\(s\) per socket/{c=$2} /^Socket\(s\)/{s=$2} END{gsub(/ /,"",c); gsub(/ /,"",s); print (c*s>0)? c*s : 0}')
   [ "${CORES:-0}" -gt 0 ] 2>/dev/null || CORES=$(( $(nproc --all 2>/dev/null || echo 4) / 2 ))
 fi
-THREADS=$(( CORES > 16 ? 16 : CORES ))
+# The launcher pins one thread per performance core when the topology says
+# which those are (bin/pick-cpus.sh); this is the count it will use, and the
+# fallback for when pinning is off.
+THREADS=$("$(dirname "$0")/pick-cpus.sh" 2>/dev/null | cut -d' ' -f1)
+[ -n "$THREADS" ] || THREADS=$(( CORES > 16 ? 16 : CORES ))
 [ "$THREADS" -lt 1 ] && THREADS=1
 
 # ---- GPU ---------------------------------------------------------------------
