@@ -34,6 +34,13 @@ Useful reports include: GPU and VRAM, total RAM, model and quantisation, the
 output of `local-claude bench --tune`, and the `--ubatch-size` you ended up with.
 That last one varies more than people expect.
 
+## Licensing of contributions
+
+The project is licensed under the AGPL-3.0 and also offered under commercial
+licenses. By submitting a contribution, you agree that it is licensed under the
+AGPL-3.0 and that the maintainer may also license it to others under different
+terms, including commercial ones.
+
 ## Notes for agents
 
 [CLAUDE.md](CLAUDE.md) carries the invariants and the accumulated gotchas —

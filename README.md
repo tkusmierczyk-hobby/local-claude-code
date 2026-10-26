@@ -187,7 +187,15 @@ model. The stack compensates automatically rather than hoping:
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+Copyright (C) 2026 tkusmierczyk.
+
+Licensed under the GNU Affero General Public License, version 3 — see
+[LICENSE](LICENSE). You may use, change and share it; if you distribute a
+modified version, or let others use one over a network, you must publish its
+source under the same license.
+
+If those terms do not fit your use, for example in a closed-source or commercial
+product, a separate commercial license is available: open an issue to ask.
 
 This is an independent project, not affiliated with or endorsed by Anthropic.
 Claude Code is not included; install it separately, under Anthropic's terms.
