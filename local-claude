@@ -771,6 +771,8 @@ fi
 # The launcher's settings, merged with any --settings of yours, yours winning key
 # by key: Claude Code would otherwise let one --settings replace the other.
 # LOCAL_REMOTE=1 drops the three that keep the session from leaving the machine.
+# Flag settings outrank every settings.json, so a default is also dropped when
+# the session's user, project or local settings.json sets that key itself.
 USER_SETTINGS=() ARGS=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -789,6 +791,17 @@ if os.environ["LOCAL_REMOTE"] != "1":
              crossSessionInbound="refuse") # other sessions cannot message in
 if sys.argv[1]:
     s["claudeMdExcludes"] = [sys.argv[1]]
+cfg = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
+for f in (os.path.join(cfg, "settings.json"), ".claude/settings.json", ".claude/settings.local.json"):
+    try:
+        own = json.load(open(f))
+    except (OSError, ValueError):
+        continue                          # absent or broken: Claude Code reports the latter
+    for k, v in own.items():
+        if k == "claudeMdExcludes" and isinstance(v, list):
+            s[k] = s.get(k, []) + [p for p in v if p not in s.get(k, [])]
+        elif k in s:
+            del s[k]                      # the file decides
 for src in sys.argv[2:]:
     try:
         u = json.loads(src) if src.lstrip().startswith("{") else json.load(open(os.path.expanduser(src)))

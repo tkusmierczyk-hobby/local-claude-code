@@ -101,8 +101,17 @@ busy-loop load is CPU-only; a memory-bandwidth-heavy neighbour is untested.
 
 Every default the launcher sets can be changed. Besides the options below, a Claude
 Code variable you set yourself, even to an empty value, is left alone (e.g.
-`CLAUDE_CODE_DISABLE_AUTO_MEMORY=0 LOCAL_STORAGE=none local-claude`), and a
-`--settings` you pass is merged with the launcher's, key by key, yours winning.
+`CLAUDE_CODE_DISABLE_AUTO_MEMORY=0 LOCAL_STORAGE=none local-claude`), a key you set
+in a `settings.json` the session reads is left to that file, and a `--settings` you
+pass is merged with the launcher's, key by key, yours winning.
+
+Local sessions read these settings files:
+
+| File | Read |
+|---|---|
+| `~/.local-claude/claude/settings.json` | as user settings (`LOCAL_STORAGE=separate` or `none`) |
+| `~/.claude/settings.json` | only with `LOCAL_STORAGE=shared` |
+| `<project>/.claude/settings.json`, `settings.local.json` | always, as in any Claude Code session |
 Session options (storage, instructions, web tools, the switches above) apply to the
 next `local-claude`. Server options (split, micro-batch, threads, context, KV type,
 load mode, thinking) apply when the server starts: run `local-claude stop` first,
