@@ -28,19 +28,23 @@ Other knobs (all optional):
                      (default 1800), and resets after a successful search
   SEARCH_CACHE_TTL   seconds to reuse results for a repeated query (default
                      900; 0 turns caching off)
+  WEB_FETCH_MAX_BYTES  download cap for web_fetch (default 2000000)
+  WEB_FETCH_ALLOW_PRIVATE=1  let web_fetch reach localhost / private networks
   SEARCH_MCP_LOG, LOCAL_SEARCH_LOG_QUERIES  call log, as before
 
 Protocol channel is stdout — all logging goes to stderr.
 """
 import fcntl
+import ipaddress
 import json
 import os
 import re
+import socket
 import sys
 import time
 from collections import OrderedDict
 from contextlib import contextmanager
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, unquote, urljoin, urlparse
 
 import requests
 from bs4 import BeautifulSoup
@@ -391,25 +395,97 @@ def run_search(query: str):
 
 # ---- web_fetch ----------------------------------------------------------------
 
+TEXT_TYPES = ("text/", "html", "xml", "json", "javascript")
+
+
+def _check_public(url: str):
+    """Refuse URLs that resolve to loopback, private, link-local or other
+    non-public addresses: the agent follows links from pages it has read, and a
+    page can steer it at local services or cloud metadata endpoints.
+    (A DNS answer that changes between this check and the request could still
+    slip through; this is a guard rail, not a sandbox.)"""
+    if os.environ.get("WEB_FETCH_ALLOW_PRIVATE") == "1":
+        return
+    p = urlparse(url)
+    if p.scheme not in ("http", "https"):
+        raise ValueError("only http(s) URLs can be fetched")
+    host = p.hostname
+    if not host:
+        raise ValueError("URL has no host")
+    try:
+        infos = socket.getaddrinfo(host, p.port or (443 if p.scheme == "https" else 80),
+                                   proto=socket.IPPROTO_TCP)
+    except socket.gaierror:
+        raise ValueError(f"could not resolve host {host}")
+    for info in infos:
+        ip = ipaddress.ip_address(info[4][0].split("%")[0])
+        if not ip.is_global:
+            raise ValueError(f"refusing to fetch {host}: it resolves to a non-public "
+                             f"address ({ip}). Set WEB_FETCH_ALLOW_PRIVATE=1 to allow "
+                             "local and private URLs.")
+
+
+def _charset(ctype: str):
+    m = re.search(r"charset=[\"']?([\w.:-]+)", ctype, re.I)
+    return m.group(1) if m else None
+
+
 def web_fetch(url: str, max_chars: int = 6000) -> str:
-    if not re.match(r"^https?://", url):
+    if not re.match(r"^https?://", url, re.I):
         url = "https://" + url
-    r = requests.get(url, headers={"User-Agent": UA}, timeout=25)
-    r.raise_for_status()
-    ctype = r.headers.get("content-type", "")
-    body = r.text
-    if "html" in ctype or "<html" in body[:1000].lower():
-        soup = BeautifulSoup(body, "html.parser")
+    cap = int(_env_float("WEB_FETCH_MAX_BYTES", 2_000_000))
+
+    # Follow redirects by hand so every hop gets the public-address check.
+    for _ in range(6):
+        _check_public(url)
+        r = requests.get(url, headers={"User-Agent": UA}, timeout=25,
+                         stream=True, allow_redirects=False)
+        if r.is_redirect:
+            nxt = urljoin(url, r.headers.get("location", ""))
+            r.close()
+            url = nxt
+            continue
+        break
+    else:
+        raise ValueError("too many redirects")
+
+    with r:
+        r.raise_for_status()
+        ctype = r.headers.get("content-type", "").lower()
+        if ctype and not any(t in ctype for t in TEXT_TYPES):
+            size = r.headers.get("content-length")
+            return (f"(not a text page: {ctype.split(';')[0].strip()}"
+                    f"{f', {size} bytes' if size else ''}; nothing extracted)")
+        chunks, total = [], 0
+        for chunk in r.iter_content(65536):
+            chunks.append(chunk)
+            total += len(chunk)
+            if total >= cap:
+                break
+        raw = b"".join(chunks)[:cap]
+        truncated_bytes = total >= cap
+
+    if not ctype and b"\x00" in raw[:2048]:
+        return "(not a text page: binary content; nothing extracted)"
+
+    if "html" in ctype or b"<html" in raw[:2000].lower():
+        # Bytes in, so bs4 can honour the page's own <meta charset> when the
+        # header doesn't name one (requests would otherwise guess ISO-8859-1).
+        soup = BeautifulSoup(raw, "html.parser", from_encoding=_charset(ctype))
         for tag in soup(["script", "style", "noscript", "header", "footer",
                          "nav", "aside", "form", "svg", "iframe"]):
             tag.decompose()
         main = soup.find("main") or soup.find("article") or soup.body or soup
         text = main.get_text("\n", strip=True)
     else:
-        text = body
+        text = raw.decode(_charset(ctype) or "utf-8", errors="replace")
+
     text = re.sub(r"\n{3,}", "\n\n", text).strip()
     if len(text) > max_chars:
-        text = text[:max_chars] + f"\n\n[...truncated at {max_chars} chars; refine with a more specific fetch if needed]"
+        text = text[:max_chars] + (f"\n\n[...truncated at {max_chars} chars; refine "
+                                   "with a more specific fetch if needed]")
+    elif truncated_bytes:
+        text += f"\n\n[...page was larger than {cap} bytes; only the start was read]"
     return text or "(page had no extractable text)"
 
 
@@ -444,7 +520,8 @@ def dispatch_tool(name: str, args: dict) -> str:
             lines.append("")
         return "\n".join(lines).strip()
     if name == "web_fetch":
-        return web_fetch(args["url"], int(args.get("max_chars", 6000) or 6000))
+        max_chars = max(200, min(int(args.get("max_chars", 6000) or 6000), 100_000))
+        return web_fetch(str(args["url"]), max_chars)
     raise ValueError(f"unknown tool: {name}")
 
 
@@ -470,7 +547,8 @@ TOOLS = [
     {
         "name": "web_fetch",
         "description": ("Fetch a URL and return its readable text (HTML stripped, truncated). "
-                        "Use after web_search to read a specific result page."),
+                        "Use after web_search to read a specific result page. Public "
+                        "http(s) pages only; binary files such as PDFs are not extracted."),
         "inputSchema": {
             "type": "object",
             "properties": {

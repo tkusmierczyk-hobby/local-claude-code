@@ -138,6 +138,8 @@ or a running server is reused unchanged.
 | `DDG_MIN_INTERVAL` | 5 | Seconds between searches sent to DuckDuckGo, counted across every session on the machine (they share the IP address it limits). Per session |
 | `DDG_COOLDOWN` / `DDG_MAX_COOLDOWN` | 300 / 1800 | Seconds DuckDuckGo is left alone after a bot check, doubling while the check persists, up to the maximum; searching during a block prolongs it. Per session |
 | `SEARCH_CACHE_TTL` | 900 | Seconds a session reuses the results of a repeated query; `0` turns this off. Per session |
+| `WEB_FETCH_ALLOW_PRIVATE` | 0 | `1` lets web_fetch reach localhost and private networks. Off because the model follows links from pages it has read, and a page can point it at local services. Per session |
+| `WEB_FETCH_MAX_BYTES` | 2000000 | Most of a page web_fetch downloads. Per session |
 | `LOCAL_STORAGE` | `separate` | Where local sessions keep transcripts (`/resume`), prompt history, auto-memory and file snapshots (`/rewind`). `separate`: `~/.local-claude/claude`, never seen by cloud sessions. `none`: nothing is kept. `shared`: `~/.claude`, like any Claude Code session, so cloud sessions can see it. Per session |
 | `LOCAL_BUILTIN_WEBSEARCH` | 0 | `1` allows Claude Code's own WebSearch. It cannot work against a local model: Anthropic's servers run its searches, so it returns nothing and the model answers from memory |
 | `LOCAL_BACKGROUND_TRAFFIC` | 0 | `1` allows Claude Code's background traffic to Anthropic: telemetry, error reports, update and installation checks, and the plugin marketplace it installs on a first run |

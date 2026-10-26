@@ -60,7 +60,7 @@ def check(name, cond):
 
 TRANSIENT = ("Max retries", "timed out", "Connection", "HTTPSConnectionPool",
              "429", "Temporary failure", "Name or service not known",
-             "unavailable right now")  # incl. DuckDuckGo's bot check
+             "could not resolve host", "unavailable right now")  # incl. DuckDuckGo's bot check
 
 
 def check_net(name, cond, text):
@@ -110,9 +110,10 @@ import search_server as ss  # noqa: E402
 
 
 class Reply:
-    def __init__(self, status, body, url=ss.DuckDuckGo.URL):
+    def __init__(self, status, body, url=ss.DuckDuckGo.URL, location=None):
         self.status_code, self._body, self.reason, self.url = status, body, "", url
         self.text = body if isinstance(body, str) else json.dumps(body)
+        self.is_redirect, self.headers = location is not None, {"location": location}
 
     def json(self):
         return self._body
@@ -120,6 +121,9 @@ class Reply:
     def raise_for_status(self):
         if self.status_code >= 400:
             raise ss.requests.HTTPError(f"HTTP {self.status_code}")
+
+    def close(self):
+        pass
 
 
 class Site:
@@ -237,6 +241,16 @@ with tempfile.TemporaryDirectory() as d:
     n = len(ddg.sent)
     err, text = call("web_search", query="Cached  Query")
     check("a repeated query is answered from the cache", not err and len(ddg.sent) == n)
+
+for url in ("http://127.0.0.1:8080/", "http://localhost/"):
+    err, text = call("web_fetch", url=url)
+    check(f"web_fetch refuses a local address ({url})", err and "non-public" in text)
+site = Site()
+ss.requests.get = site
+site.replies[:] = [Reply(302, "", url="http://1.1.1.1/", location="http://127.0.0.1:8080/")]
+err, text = call("web_fetch", url="http://1.1.1.1/")
+check("web_fetch refuses a redirect to a local address",
+      err and "non-public" in text and len(site.sent) == 1)
 
 print(f"\n{'ALL PASSED' if fails == 0 else str(fails) + ' FAILED'}")
 sys.exit(1 if fails else 0)
