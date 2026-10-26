@@ -52,8 +52,19 @@ from urllib.parse import parse_qs, unquote, urljoin, urlparse
 import requests
 from bs4 import BeautifulSoup
 
-UA = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-      "(KHTML, like Gecko) Chrome/125.0 Safari/537.36")
+UAS = [
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/125.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/123.0 Safari/537.36",
+]
+
+
+def _ua():
+    return random.choice(UAS)
+
 
 MAX_RESULTS = 10  # backends always fetch this many; the cache serves any k <= 10
 
@@ -150,7 +161,7 @@ class DuckDuckGo:
 
     def __init__(self):
         self.session = requests.Session()  # keeps cookies and the connection
-        self.session.headers.update({"User-Agent": UA,
+        self.session.headers.update({"User-Agent": _ua(),
                                      "Accept-Language": "en-US,en;q=0.9"})
         self.min_interval = _env_float("DDG_MIN_INTERVAL", 5.0)
         self.jitter = max(0.0, _env_float("DDG_JITTER", 3.0))
@@ -224,6 +235,8 @@ class DuckDuckGo:
 
     def search(self, query: str, k: int = MAX_RESULTS):
         self._turn()
+        # Rotate User-Agent per-request so the session doesn't fingerprint the same one.
+        self.session.headers["User-Agent"] = _ua()
         # POST, as the lite page's own search form does. One request per search:
         # each one counts against the limit.
         r = self.session.post(self.URL, data={"q": query}, timeout=20)
@@ -256,7 +269,8 @@ def brave_search(query: str, k: int = MAX_RESULTS):
     r = requests.get(
         "https://api.search.brave.com/res/v1/web/search",
         params={"q": query, "count": min(k, 20)},
-        headers={"Accept": "application/json", "X-Subscription-Token": _brave_key()},
+        headers={"Accept": "application/json", "User-Agent": _ua(),
+                 "X-Subscription-Token": _brave_key()},
         timeout=20)
     if r.status_code == 429:
         raise SearchUnavailable("Brave Search refused the search (HTTP 429): its rate limit, "
@@ -281,7 +295,7 @@ def brave_search(query: str, k: int = MAX_RESULTS):
 def searxng_search(query: str, k: int = MAX_RESULTS):
     base = os.environ["SEARXNG_URL"].rstrip("/")
     r = requests.get(f"{base}/search", params={"q": query, "format": "json"},
-                     headers={"Accept": "application/json", "User-Agent": UA},
+                     headers={"Accept": "application/json", "User-Agent": _ua()},
                      timeout=25)
     if r.status_code == 403:
         raise SearchSetupError("SearXNG refused format=json; add `json` under "
@@ -444,7 +458,7 @@ def web_fetch(url: str, max_chars: int = 6000) -> str:
     # Follow redirects by hand so every hop gets the public-address check.
     for _ in range(6):
         _check_public(url)
-        r = requests.get(url, headers={"User-Agent": UA}, timeout=25,
+        r = requests.get(url, headers={"User-Agent": _ua()}, timeout=25,
                          stream=True, allow_redirects=False)
         if r.is_redirect:
             nxt = urljoin(url, r.headers.get("location", ""))
