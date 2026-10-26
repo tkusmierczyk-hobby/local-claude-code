@@ -117,8 +117,9 @@ def dispatch_tool(name: str, args: dict) -> str:
         try:
             with open(logpath, "a") as fh:
                 # The tool name only: queries and URLs come from the user's
-                # conversation, and the stack stores none of it.
-                fh.write(f"{time.strftime('%H:%M:%S')} {name}\n")
+                # conversation. LOCAL_SEARCH_LOG_QUERIES=1 logs them as well.
+                detail = f" {json.dumps(args)[:200]}" if os.environ.get("LOCAL_SEARCH_LOG_QUERIES") == "1" else ""
+                fh.write(f"{time.strftime('%H:%M:%S')} {name}{detail}\n")
         except OSError:
             pass
     if name == "web_search":
