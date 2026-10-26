@@ -134,6 +134,7 @@ or a running server is reused unchanged.
 | `LOCAL_DEVICE` | autodetected | Force a GPU; never the integrated one |
 | `LOCAL_TEMPLATE` | auto-patched | `0` uses the model's stock chat template — see DESIGN-NOTES |
 | `LOCAL_SEARCH` | 1 | `0` drops the web-search MCP server, leaving no web access at all: Claude Code's own web tools are off by default |
+| `LOCAL_SEARCH_ENGINE` | `brave` if `~/.local-claude/brave-search.key` holds a key, else `duckduckgo` | Where web searches go. `duckduckgo` needs no key but refuses for a while after a burst of searches; `brave` uses Brave's Search API with that key, which is paid per search beyond a monthly credit. The key lives in a file rather than a variable so that other programs started from your shell cannot read it. Per session |
 | `LOCAL_STORAGE` | `separate` | Where local sessions keep transcripts (`/resume`), prompt history, auto-memory and file snapshots (`/rewind`). `separate`: `~/.local-claude/claude`, never seen by cloud sessions. `none`: nothing is kept. `shared`: `~/.claude`, like any Claude Code session, so cloud sessions can see it. Per session |
 | `LOCAL_BUILTIN_WEBSEARCH` | 0 | `1` allows Claude Code's own WebSearch. It cannot work against a local model: Anthropic's servers run its searches, so it returns nothing and the model answers from memory |
 | `LOCAL_BACKGROUND_TRAFFIC` | 0 | `1` allows Claude Code's background traffic to Anthropic: telemetry, error reports, update and installation checks, and the plugin marketplace it installs on a first run |

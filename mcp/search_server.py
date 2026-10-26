@@ -3,8 +3,9 @@
 
 No third-party MCP SDK: speaks JSON-RPC 2.0 over newline-delimited stdio
 (the MCP stdio transport) directly. Search uses DuckDuckGo's keyless "lite"
-endpoint; fetch strips HTML to readable text. Only deps are requests + bs4,
-already present in this environment.
+endpoint, or Brave's Search API when LOCAL_SEARCH_ENGINE=brave (the launcher
+picks it when ~/.local-claude/brave-search.key exists); fetch strips HTML to
+readable text. Only deps are requests + bs4, already present in this environment.
 
 Protocol channel is stdout — all logging goes to stderr.
 """
@@ -42,7 +43,7 @@ def _decode_ddg_href(href: str) -> str:
 
 
 class SearchBlocked(Exception):
-    """DuckDuckGo answered with its bot check instead of results."""
+    """The search engine refused for now (rate limit, bot check), not a fault here."""
 
 
 def _blocked(r) -> bool:
@@ -94,6 +95,66 @@ def ddg_search(query: str, max_results: int = 5):
     return res
 
 
+class SearchSetupError(Exception):
+    """The configured search engine cannot be used as set up."""
+
+
+def _brave_key_file() -> str:
+    return os.environ.get("SEARCH_BRAVE_KEY_FILE") or os.path.join(
+        os.environ.get("LOCAL_CLAUDE_STATE") or os.path.expanduser("~/.local-claude"),
+        "brave-search.key")
+
+
+def brave_search(query: str, max_results: int = 5):
+    # Read per search, so a new key takes effect without restarting the session.
+    path = _brave_key_file()
+    try:
+        with open(path) as fh:
+            key = fh.read().strip()
+    except OSError:
+        key = ""
+    if not key:
+        raise SearchSetupError(f"Brave Search is selected but there is no API key in {path}. "
+                               "This is a configuration problem: tell the user.")
+    r = requests.get("https://api.search.brave.com/res/v1/web/search",
+                     params={"q": query, "count": max_results},
+                     headers={"Accept": "application/json", "X-Subscription-Token": key},
+                     timeout=20)
+    if r.status_code != 200:
+        try:
+            err = r.json().get("error") or {}
+        except ValueError:
+            err = {}
+        if err.get("code") == "SUBSCRIPTION_TOKEN_INVALID" or r.status_code in (401, 403):
+            raise SearchSetupError(f"Brave Search rejected the API key in {path} "
+                                   f"(HTTP {r.status_code}). This is a configuration problem: "
+                                   "tell the user.")
+        if r.status_code == 429:
+            raise SearchBlocked("Brave Search refused the search (HTTP 429): its rate limit, "
+                                "or the account's monthly credit is used up. Try again later, "
+                                "or web_fetch a URL you already know.")
+        raise RuntimeError(f"Brave Search answered HTTP {r.status_code}: "
+                           f"{err.get('detail') or r.reason}")
+    out = []
+    for x in ((r.json().get("web") or {}).get("results") or [])[:max_results]:
+        out.append({
+            "title": x.get("title", ""),
+            "url": x.get("url", ""),
+            # descriptions mark the matched words with <strong>
+            "snippet": BeautifulSoup(x.get("description", ""), "html.parser").get_text(),
+        })
+    return out
+
+
+def search(query: str, max_results: int = 5):
+    engine = os.environ.get("LOCAL_SEARCH_ENGINE") or "duckduckgo"
+    if engine == "brave":
+        return brave_search(query, max_results)
+    if engine == "duckduckgo":
+        return ddg_search(query, max_results)
+    raise SearchSetupError(f"unknown LOCAL_SEARCH_ENGINE '{engine}' (use duckduckgo or brave)")
+
+
 def web_fetch(url: str, max_chars: int = 6000) -> str:
     if not re.match(r"^https?://", url):
         url = "https://" + url
@@ -130,7 +191,7 @@ def dispatch_tool(name: str, args: dict) -> str:
     if name == "web_search":
         query = args["query"]
         k = max(1, min(int(args.get("max_results", 5) or 5), 10))
-        res = ddg_search(query, k)
+        res = search(query, k)
         if not res:
             return f"No results found for: {query}"
         lines = [f"Web search results for: {query}", ""]
@@ -151,7 +212,7 @@ def dispatch_tool(name: str, args: dict) -> str:
 TOOLS = [
     {
         "name": "web_search",
-        "description": ("Search the web (DuckDuckGo) for current information. Returns a "
+        "description": ("Search the web for current information. Returns a "
                         "numbered list of results with title, URL, and snippet. Use for "
                         "up-to-date facts, library docs, error messages, or anything not "
                         "already in the local codebase."),

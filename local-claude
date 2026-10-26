@@ -42,6 +42,8 @@
 #   LOCAL_CLAUDE_MD=~/x.md             your instructions for local sessions
 #                                      (default: ~/.local-claude/CLAUDE.md, if present)
 #   LOCAL_SEARCH=0                     disable the local web-search MCP server
+#   LOCAL_SEARCH_ENGINE=duckduckgo     or brave (default: brave if ~/.local-claude/brave-search.key
+#                                      holds an API key, else duckduckgo)
 #   LOCAL_BUILTIN_WEBFETCH=1           also allow Claude Code's own WebFetch (off by default)
 #   LOCAL_BUILTIN_WEBSEARCH=1          also allow its WebSearch (off: cannot work locally)
 #   LOCAL_STORAGE=separate             where sessions keep history and memory:
@@ -77,6 +79,11 @@ LOCAL_PORT="${LOCAL_PORT:-8080}"
 # requests send it too. LLAMA_API_KEY, llama.cpp's own name, counts as well.
 API_KEY="${LOCAL_API_KEY:-${LLAMA_API_KEY:-}}"
 AUTH=(); [[ -n "$API_KEY" ]] && AUTH=(-H "Authorization: Bearer $API_KEY")
+# The web search engine: Brave's Search API once its key is in brave-search.key,
+# else DuckDuckGo, which needs none. A file rather than an environment variable,
+# which every program started from the shell, cloud sessions included, could read.
+BRAVE_KEY_FILE="$STATE_DIR/brave-search.key"
+SEARCH_ENGINE="${LOCAL_SEARCH_ENGINE:-$([[ -s "$BRAVE_KEY_FILE" ]] && echo brave || echo duckduckgo)}"
 mkdir -p "$STATE_DIR"
 
 # install.sh writes hardware-derived defaults here. They are loaded as HWENV_*,
@@ -530,6 +537,9 @@ if [[ "${1:-}" == "status" ]]; then
   md="${LOCAL_CLAUDE_MD:-$STATE_DIR/CLAUDE.md}"
   echo "claude.md: $([[ -s "$md" ]] && echo "$md ($(wc -l < "$md") lines)" || echo "none (write one at $md)");" \
        "$([[ "${LOCAL_GLOBAL_CLAUDE_MD:-0}" == 1 ]] && echo "~/.claude/CLAUDE.md also loaded" || echo "~/.claude/CLAUDE.md skipped")"
+  if [[ "${LOCAL_SEARCH:-1}" == "0" ]]; then echo "search:   off"
+  elif [[ "$SEARCH_ENGINE" == brave ]]; then echo "search:   Brave Search API, key in $BRAVE_KEY_FILE$([[ -s "$BRAVE_KEY_FILE" ]] || echo ' (missing!)')"
+  else echo "search:   $SEARCH_ENGINE, no key (for Brave Search, put an API key in $BRAVE_KEY_FILE)"; fi
   nvidia-smi --query-gpu=name,memory.used,memory.total --format=csv,noheader 2>/dev/null | sed 's/^/gpu:      /'
   free -g | awk '/^Mem:/ {printf "ram:      %d GB used / %d GB total\n", $3, $2}'
   exit 0
@@ -716,12 +726,20 @@ EXTRA_ARGS=()
 
 # ---- Web search --------------------------------------------------------------
 # Web access goes through a tiny local MCP server instead of Claude Code's own
-# tools: web_search (DuckDuckGo's keyless "lite" page) and web_fetch (the page
-# itself). Nothing else is contacted. On by default; LOCAL_SEARCH=0 means no web
-# access at all, since the built-in WebSearch/WebFetch are switched off below
-# (WebFetch can be switched back on with LOCAL_BUILTIN_WEBFETCH=1).
+# tools: web_search (DuckDuckGo's keyless "lite" page, or Brave's Search API with
+# a key) and web_fetch (the page itself). Nothing else is contacted. On by
+# default; LOCAL_SEARCH=0 means no web access at all, since the built-in
+# WebSearch/WebFetch are switched off below (WebFetch can be switched back on
+# with LOCAL_BUILTIN_WEBFETCH=1). Claude Code hands its environment to the
+# server, which is how the engine choice reaches it.
 SEARCH_MCP="${LOCAL_SEARCH_CONFIG:-$STATE_DIR/search-mcp.json}"
 if [[ "${LOCAL_SEARCH:-1}" != "0" ]] && [[ -f "$SEARCH_MCP" ]]; then
+  case "$SEARCH_ENGINE" in
+    duckduckgo) ;;
+    brave) [[ -s "$BRAVE_KEY_FILE" ]] || { echo "[local-claude] LOCAL_SEARCH_ENGINE=brave needs an API key in $BRAVE_KEY_FILE" >&2; exit 1; } ;;
+    *) echo "[local-claude] LOCAL_SEARCH_ENGINE must be duckduckgo or brave (got: $SEARCH_ENGINE)" >&2; exit 1 ;;
+  esac
+  export LOCAL_SEARCH_ENGINE="$SEARCH_ENGINE" SEARCH_BRAVE_KEY_FILE="$BRAVE_KEY_FILE"
   EXTRA_ARGS+=(--mcp-config "$SEARCH_MCP")
   [[ -n "$LOCAL_RULES" ]] && LOCAL_RULES="$LOCAL_RULES
 8. You have web_search and web_fetch tools (from the \"search\" MCP server). Use web_search when you need current information, library docs, or facts not in the codebase, then web_fetch a result URL to read it. Do not claim you cannot access the internet."

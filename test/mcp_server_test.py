@@ -4,6 +4,7 @@ import os
 import json
 import subprocess
 import sys
+import tempfile
 import threading
 
 PYTHON = sys.executable
@@ -102,8 +103,8 @@ print("  fetch sample:", fr_text[:120].replace("\n", " ") + "...")
 check_net("web_fetch not error", fr.get("isError") is False, fr_text)
 check_net("web_fetch got example.com body", "example" in fr_text.lower(), fr_text)
 
-# Offline, against a stand-in for DuckDuckGo: its refusal,
-# which a live run reaches only by luck.
+# Offline, against stand-ins for the engines: the refusal and key handling,
+# which a live run reaches only by luck (DuckDuckGo) or with a real key (Brave).
 sys.path.insert(0, os.path.dirname(SERVER))
 import search_server as ss  # noqa: E402
 
@@ -138,6 +139,30 @@ replies[:] = [Reply(403, "If this persists, please email us.")]
 err, text = call_search("x")
 check("duckduckgo: a 403 refusal says it is not a configuration problem",
       err and "not a configuration problem" in text)
+
+with tempfile.TemporaryDirectory() as d:
+    keyfile = os.path.join(d, "brave-search.key")
+    with open(keyfile, "w") as fh:
+        fh.write("test-key-123\n")
+    os.environ.update(LOCAL_SEARCH_ENGINE="brave", SEARCH_BRAVE_KEY_FILE=keyfile)
+    replies[:] = [Reply(200, {"web": {"results": [{
+        "title": "Built-in Functions", "url": "https://docs.python.org/3/library/functions.html",
+        "description": "Return an <strong>enumerate</strong> object."}]}})]
+    err, text = call_search("python enumerate")
+    check("brave: the key goes in the header, not the URL",
+          seen["headers"].get("X-Subscription-Token") == "test-key-123"
+          and "test-key-123" not in json.dumps(seen["params"]))
+    check("brave: results parsed, <strong> tags stripped",
+          not err and "URL: https://docs.python.org" in text and "Return an enumerate object." in text)
+    replies[:] = [Reply(422, {"error": {"code": "SUBSCRIPTION_TOKEN_INVALID"}, "type": "ErrorResponse"})]
+    err, text = call_search("x")
+    check("brave: a rejected key is reported as a configuration problem, key not echoed",
+          err and "rejected the API key" in text and "test-key-123" not in text)
+    os.remove(keyfile)
+    replies[:] = [Reply(200, {})]
+    err, text = call_search("x")
+    check("brave: a missing key file is reported, nothing sent",
+          err and "no API key in" in text and len(replies) == 1)
 
 print(f"\n{'ALL PASSED' if fails == 0 else str(fails) + ' FAILED'}")
 sys.exit(1 if fails else 0)

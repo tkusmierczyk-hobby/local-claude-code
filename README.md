@@ -3,8 +3,9 @@
 Run Claude Code against a model on your own machine. Same CLI, same tools,
 permissions, hooks and subagents — but inference happens locally, and nothing
 contacts Anthropic at runtime. The only outside traffic is web search when the
-model uses it: queries go to DuckDuckGo and pages are fetched from the sites
-themselves (`LOCAL_SEARCH=0` turns that off).
+model uses it: queries go to DuckDuckGo (or to Brave's Search API, if you give it
+a key) and pages are fetched from the sites themselves (`LOCAL_SEARCH=0` turns
+that off).
 
 The interesting part is what makes it usable: a 35-billion-parameter model on an
 8 GB graphics card, at a speed you can actually work with. That is not
@@ -154,7 +155,7 @@ model. The stack compensates automatically rather than hoping:
 | Operating rules injected into the system prompt | `LOCAL_RULES=""` to disable |
 | Syntax errors fed straight back to the model | `hooks/syntax_check.sh` on Write/Edit |
 | Cannot declare "done" while `.claude/verify.sh` fails | `hooks/verify_on_stop.sh`, max 2 retries |
-| Web search and fetch through a local server; Claude Code's own web tools are off, since its fetch asks Anthropic about every domain and its search cannot work locally | `LOCAL_SEARCH=0` for no web access at all; `LOCAL_BUILTIN_WEBFETCH=1` allows the built-in fetch, with the Anthropic check skipped; `LOCAL_BUILTIN_WEBSEARCH=1` the built-in search |
+| Web search and fetch through a local server; Claude Code's own web tools are off, since its fetch asks Anthropic about every domain and its search cannot work locally | A Brave Search API key in `~/.local-claude/brave-search.key` for searches DuckDuckGo cannot refuse; `LOCAL_SEARCH=0` for no web access at all; `LOCAL_BUILTIN_WEBFETCH=1` allows the built-in fetch, with the Anthropic check skipped; `LOCAL_BUILTIN_WEBSEARCH=1` the built-in search |
 | No background traffic to Anthropic, no feedback reports, no mirroring to claude.ai, remote control or messages from other sessions | `LOCAL_BACKGROUND_TRAFFIC=1`, `LOCAL_FEEDBACK=1`, `LOCAL_REMOTE=1`. Any Claude Code variable or `--settings` key you set yourself also wins over these defaults |
 | Your global `~/.claude/CLAUDE.md` is skipped: it is written for the cloud model and costs context | `LOCAL_GLOBAL_CLAUDE_MD=1` to load it anyway |
 | Instructions of your own for every local session, written for the local model | `~/.local-claude/CLAUDE.md`, if you create it |

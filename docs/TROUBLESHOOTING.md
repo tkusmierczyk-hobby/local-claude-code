@@ -132,7 +132,14 @@ it answers with a bot check or an error page for a while. The search tool then
 tells the model so, and that this is not a configuration problem: if your session
 says your configuration blocks web search, this is what it means. The test reports
 it as SKIP rather than failure. Waiting a few minutes clears it.
-`LOCAL_SEARCH=0` disables the server entirely.
+
+If it keeps happening, search through Brave's Search API instead: put an API key
+from <https://api-dashboard.search.brave.com> in `~/.local-claude/brave-search.key`
+and `chmod 600` it. The next session uses it; `local-claude status` shows which
+engine is in use. Your queries then go to Brave instead of DuckDuckGo. As of
+October 2026 Brave asks for a card and includes a monthly credit worth about 1,000
+searches. `LOCAL_SEARCH_ENGINE=duckduckgo` goes back for one session without
+removing the key, and `LOCAL_SEARCH=0` disables the server entirely.
 
 ## "the running server requires an API key"
 
