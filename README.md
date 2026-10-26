@@ -157,7 +157,7 @@ model. The stack compensates automatically rather than hoping:
 | Web search and fetch through a local server; Claude Code's own web tools are off, since its fetch asks Anthropic about every domain and its search cannot work locally | `LOCAL_SEARCH=0` for no web access at all; `LOCAL_BUILTIN_WEBFETCH=1` allows the built-in fetch, with the Anthropic check skipped |
 | Your global `~/.claude/CLAUDE.md` is skipped: it is written for the cloud model and costs context | `LOCAL_GLOBAL_CLAUDE_MD=1` to load it anyway |
 | Instructions of your own for every local session, written for the local model | `~/.local-claude/CLAUDE.md`, if you create it |
-| None of the conversation is stored: Claude Code's transcripts and prompt history are off for local sessions, and the search log records only which tool ran | `LOCAL_SAVE_SESSIONS=1` keeps sessions, which `/resume` needs |
+| Local sessions keep their history and memory in a folder of their own, `~/.local-claude/claude`, never in `~/.claude`, where cloud sessions would pick them up | `LOCAL_STORAGE=none` keeps nothing; `LOCAL_STORAGE=shared` uses `~/.claude` |
 | Best-of-N attempts gated on your acceptance test | `local-claude attempts 3 "..."` |
 
 ## Documentation

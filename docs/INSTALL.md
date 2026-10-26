@@ -14,7 +14,7 @@ touches nothing outside your home directory.
 | Path | Contents |
 |---|---|
 | `~/.local/share/local-claude/` | llama.cpp builds, with `current` symlinked to the active one |
-| `~/.local-claude/` | state: tuned split, detected device, chat templates, logs, MCP config — and `CLAUDE.md`, your instructions for local sessions, if you write one |
+| `~/.local-claude/` | state: tuned split, detected device, chat templates, logs, MCP config — `claude/`, where local sessions keep their history and memory, and `CLAUDE.md`, your instructions for local sessions, if you write one |
 | `~/models/` | GGUF model files |
 | `~/.local/bin/local-claude` | symlink to the launcher in this repo |
 

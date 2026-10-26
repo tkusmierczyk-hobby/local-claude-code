@@ -133,10 +133,16 @@ is blocked, rather than that nothing was found, and the test reports it as SKIP
 rather than failure. Waiting a few minutes clears it. `LOCAL_SEARCH=0` disables
 the server entirely.
 
-## `/resume` does not list a local session
+## `/resume` does not list a session
 
-By design: local sessions are not saved, so there is nothing to resume. Start
-with `LOCAL_SAVE_SESSIONS=1 local-claude` for sessions you want to keep.
+Local sessions keep their history in `~/.local-claude/claude`, apart from your
+normal Claude Code sessions, so each kind only lists its own. Sessions from before
+the separation stay in `~/.claude`. With `LOCAL_STORAGE=none` nothing is kept.
+
+## The first local session asks for a theme and whether to trust the folder
+
+Expected once: local sessions have their own Claude Code settings, so the
+first-run screens appear again, and each project folder is trusted once more.
 
 ## Claude Code says `unrecognized_model`
 

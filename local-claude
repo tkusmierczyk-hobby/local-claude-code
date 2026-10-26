@@ -43,7 +43,8 @@
 #                                      (default: ~/.local-claude/CLAUDE.md, if present)
 #   LOCAL_SEARCH=0                     disable the local web-search MCP server
 #   LOCAL_BUILTIN_WEBFETCH=1           also allow Claude Code's own WebFetch (off by default)
-#   LOCAL_SAVE_SESSIONS=1              save transcripts and prompt history (off: nothing is stored)
+#   LOCAL_STORAGE=separate             where sessions keep history and memory:
+#                                      separate (~/.local-claude/claude), none, shared (~/.claude)
 #   LOCAL_RULES=""                     disable small-model rule injection
 
 set -euo pipefail
@@ -503,6 +504,11 @@ if [[ "${1:-}" == "status" ]]; then
   echo "ubatch:   ${LOCAL_UBATCH:-$(default_ubatch)}$([[ -s "$(ubatch_cache)" ]] && echo ' (tuned)')"
   pick_threads
   echo "threads:  $THREADS${PIN_CPUS:+, pinned to CPUs $PIN_CPUS}"
+  case "${LOCAL_STORAGE:-separate}" in
+    separate) echo "storage:  separate — history and memory in ${LOCAL_CLAUDE_CONFIG_DIR:-$STATE_DIR/claude}" ;;
+    none)     echo "storage:  none — nothing kept" ;;
+    *)        echo "storage:  ${LOCAL_STORAGE} — ${CLAUDE_CONFIG_DIR:-$HOME/.claude}, shared with cloud sessions" ;;
+  esac
   md="${LOCAL_CLAUDE_MD:-$STATE_DIR/CLAUDE.md}"
   echo "claude.md: $([[ -s "$md" ]] && echo "$md ($(wc -l < "$md") lines)" || echo "none (write one at $md)");" \
        "$([[ "${LOCAL_GLOBAL_CLAUDE_MD:-0}" == 1 ]] && echo "~/.claude/CLAUDE.md also loaded" || echo "~/.claude/CLAUDE.md skipped")"
@@ -622,12 +628,28 @@ export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1  # no telemetry/update/error p
 export DISABLE_AUTOUPDATER=1
 export DISABLE_TELEMETRY=1
 export DISABLE_ERROR_REPORTING=1
-# ...and store none of the conversation. Claude Code otherwise writes every
-# session to ~/.claude/projects/ (the transcript /resume reads) and every prompt
-# to ~/.claude/history.jsonl. This one variable stops both, in interactive
-# sessions too; local sessions then cannot be resumed. LOCAL_SAVE_SESSIONS=1
-# keeps them.
-[[ "${LOCAL_SAVE_SESSIONS:-0}" == "1" ]] || export CLAUDE_CODE_SKIP_PROMPT_HISTORY=1
+# A fresh Claude Code folder also installs the official plugin marketplace from
+# downloads.claude.ai on its first run, and may check its own installation.
+export DISABLE_INSTALLATION_CHECKS=1 CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL=1
+
+# Where local sessions keep what Claude Code stores: transcripts (/resume), the
+# up-arrow prompt history, auto-memory notes and file snapshots (/rewind).
+# Under ~/.claude, a cloud session would pick all of it up on its own, so:
+#   separate (default)  a folder of their own, ~/.local-claude/claude
+#   none                nothing at all, in that same separate folder
+#   shared              ~/.claude, like any Claude Code session
+CLOUD_CONFIG_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+case "${LOCAL_STORAGE:=separate}" in
+  separate|none)
+    export CLAUDE_CONFIG_DIR="${LOCAL_CLAUDE_CONFIG_DIR:-$STATE_DIR/claude}"
+    mkdir -p "$CLAUDE_CONFIG_DIR" ;;
+  shared) ;;
+  *) echo "[local-claude] LOCAL_STORAGE must be separate, none or shared (got: $LOCAL_STORAGE)" >&2; exit 1 ;;
+esac
+if [[ "$LOCAL_STORAGE" == "none" ]]; then
+  export CLAUDE_CODE_SKIP_PROMPT_HISTORY=1        # no transcript, no prompt history
+  export CLAUDE_CODE_DISABLE_FILE_CHECKPOINTING=1 CLAUDE_CODE_DISABLE_AUTO_MEMORY=1
+fi
 
 # Marks this session for hooks that only apply to the local stack
 export LOCAL_CLAUDE=1
@@ -700,7 +722,7 @@ fi
 # Excluding it by path covers both; the project's own CLAUDE.md still loads.
 EXCLUDE=""
 if [[ "${LOCAL_GLOBAL_CLAUDE_MD:-0}" != "1" ]]; then
-  EXCLUDE="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/CLAUDE.md"
+  EXCLUDE="$CLOUD_CONFIG_DIR/CLAUDE.md"
 fi
 SETTINGS="$(python3 -c '
 import json, sys

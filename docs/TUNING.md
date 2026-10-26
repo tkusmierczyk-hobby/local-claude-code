@@ -116,7 +116,7 @@ busy-loop load is CPU-only; a memory-bandwidth-heavy neighbour is untested.
 | `LOCAL_DEVICE` | autodetected | Force a GPU; never the integrated one |
 | `LOCAL_TEMPLATE` | auto-patched | `0` uses the model's stock chat template — see DESIGN-NOTES |
 | `LOCAL_SEARCH` | 1 | `0` drops the web-search MCP server, leaving no web access at all: Claude Code's own web tools are off by default |
-| `LOCAL_SAVE_SESSIONS` | 0 | `1` lets Claude Code save local sessions again: transcripts in `~/.claude/projects/` (needed for `/resume` and `--continue`) and prompts in `~/.claude/history.jsonl`. Off by default, so nothing of the conversation is written to disk |
+| `LOCAL_STORAGE` | `separate` | Where local sessions keep transcripts (`/resume`), prompt history, auto-memory and file snapshots (`/rewind`). `separate`: `~/.local-claude/claude`, never seen by cloud sessions. `none`: nothing is kept. `shared`: `~/.claude`, like any Claude Code session, so cloud sessions can see it. Per session |
 | `LOCAL_BUILTIN_WEBFETCH` | 0 | `1` allows Claude Code's own WebFetch. It fetches on this machine and summarises with the local model; the launcher skips its domain check, which would otherwise ask Anthropic about every domain. Its WebSearch stays off: Anthropic's servers run those searches, so locally it returns nothing and the model answers from memory |
 | `LOCAL_CLAUDE_MD` | `~/.local-claude/CLAUDE.md` | Your standing instructions for local sessions, in every project: the local counterpart of `~/.claude/CLAUDE.md`. Loaded only if the file exists; keep it short, it is sent with every session |
 | `LOCAL_GLOBAL_CLAUDE_MD` | 0 | `1` also loads your global `~/.claude/CLAUDE.md`, which local sessions skip by default (~8k tokens on the reference machine) |
@@ -137,6 +137,7 @@ busy-loop load is CPU-only; a memory-bandwidth-heavy neighbour is untested.
 | `LOCAL_VRAM_MARGIN` | 768 | MiB of VRAM `bench --tune` requires free after its test request; raise it if the server still dies mid-session |
 | `LOCAL_SEARCH_CONFIG` | `~/.local-claude/search-mcp.json` | Path to the MCP config `install.sh` generates |
 | `LOCAL_LLAMA_ARGS` | — | Extra flags passed straight to `llama-server` |
+| `LOCAL_CLAUDE_CONFIG_DIR` | `~/.local-claude/claude` | The separate folder `LOCAL_STORAGE=separate` and `none` use |
 | `LOCAL_CLAUDE_PREFIX` / `LOCAL_CLAUDE_STATE` / `MODELS_DIR` | see [INSTALL](INSTALL.md#what-goes-where) | Relocate the install, state or models |
 
 ## Sizing context
