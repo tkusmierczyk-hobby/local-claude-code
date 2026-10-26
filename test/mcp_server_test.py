@@ -58,7 +58,7 @@ def check(name, cond):
 
 TRANSIENT = ("Max retries", "timed out", "Connection", "HTTPSConnectionPool",
              "429", "Temporary failure", "Name or service not known",
-             "blocking automated searches")  # DuckDuckGo's bot check
+             "refusing automated searches")  # DuckDuckGo's bot check
 
 
 def check_net(name, cond, text):
@@ -101,6 +101,43 @@ fr_text = "".join(b.get("text", "") for b in fr.get("content", []))
 print("  fetch sample:", fr_text[:120].replace("\n", " ") + "...")
 check_net("web_fetch not error", fr.get("isError") is False, fr_text)
 check_net("web_fetch got example.com body", "example" in fr_text.lower(), fr_text)
+
+# Offline, against a stand-in for DuckDuckGo: its refusal,
+# which a live run reaches only by luck.
+sys.path.insert(0, os.path.dirname(SERVER))
+import search_server as ss  # noqa: E402
+
+
+class Reply:
+    def __init__(self, status, body):
+        self.status_code, self._body, self.reason = status, body, ""
+        self.text = body if isinstance(body, str) else json.dumps(body)
+
+    def json(self):
+        return self._body
+
+
+replies, seen = [], {}
+
+
+def fake_get(url, params=None, headers=None, timeout=None):
+    seen.update(url=url, params=params, headers=headers)
+    return replies.pop(0)
+
+
+def call_search(query):
+    r = ss.handle({"jsonrpc": "2.0", "id": 9, "method": "tools/call",
+                   "params": {"name": "web_search", "arguments": {"query": query}}})["result"]
+    return r["isError"], r["content"][0]["text"]
+
+
+ss.requests.get = fake_get
+os.environ.pop("SEARCH_MCP_LOG", None)
+os.environ["LOCAL_SEARCH_ENGINE"] = "duckduckgo"
+replies[:] = [Reply(403, "If this persists, please email us.")]
+err, text = call_search("x")
+check("duckduckgo: a 403 refusal says it is not a configuration problem",
+      err and "not a configuration problem" in text)
 
 print(f"\n{'ALL PASSED' if fails == 0 else str(fails) + ' FAILED'}")
 sys.exit(1 if fails else 0)
