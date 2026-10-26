@@ -127,19 +127,27 @@ python3 -m pip install requests beautifulsoup4
 ./install.sh                 # regenerates the MCP config
 ```
 
-DuckDuckGo rate-limits and intermittently refuses, and after a burst of searches
-it answers with a bot check or an error page for a while. The search tool then
-tells the model so, and that this is not a configuration problem: if your session
-says your configuration blocks web search, this is what it means. The test reports
-it as SKIP rather than failure. Waiting a few minutes clears it.
+Since autumn 2026 DuckDuckGo answers a burst of searches with a bot check, for
+every program on your IP address, and searching while it is up keeps it there.
+Others measured a block after about nine back-to-back searches, lasting about 15
+minutes, and over an hour after repeated blocks. The search server therefore
+sends DuckDuckGo at most one search every 5 seconds and, after a bot check, none
+for 5 minutes, doubling while the check persists, up to 30. All sessions on the
+machine share this, and a repeated query is answered from a cache. Meanwhile the
+tool tells the model that this is not a configuration problem: if your session
+says your configuration blocks web search, this is what it means. Don't test by
+searching again and again: that is what keeps the block in place. The test
+reports it as SKIP rather than failure.
 
-If it keeps happening, search through Brave's Search API instead: put an API key
-from <https://api-dashboard.search.brave.com> in `~/.local-claude/brave-search.key`
-and `chmod 600` it. The next session uses it; `local-claude status` shows which
-engine is in use. Your queries then go to Brave instead of DuckDuckGo. As of
-October 2026 Brave asks for a card and includes a monthly credit worth about 1,000
-searches. `LOCAL_SEARCH_ENGINE=duckduckgo` goes back for one session without
-removing the key, and `LOCAL_SEARCH=0` disables the server entirely.
+For a fallback, put a Brave Search API key from
+<https://api-dashboard.search.brave.com> in `~/.local-claude/brave-search.key` and
+`chmod 600` it; it takes effect from the next search. Searches still go to
+DuckDuckGo first, and to Brave while DuckDuckGo refuses; `local-claude status`
+shows the order. As of October 2026 Brave asks for a card and includes a monthly
+credit worth about 1,000 searches. If Brave rejects the key, the search stops with
+a message saying so, rather than the query going elsewhere. `SEARCH_BACKENDS=ddg`
+leaves Brave out for one session, and `LOCAL_SEARCH=0` disables the server
+entirely.
 
 ## "the running server requires an API key"
 

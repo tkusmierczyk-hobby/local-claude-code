@@ -2,18 +2,44 @@
 """Minimal MCP stdio server giving the local agent web search + fetch.
 
 No third-party MCP SDK: speaks JSON-RPC 2.0 over newline-delimited stdio
-(the MCP stdio transport) directly. Search uses DuckDuckGo's keyless "lite"
-endpoint, or Brave's Search API when LOCAL_SEARCH_ENGINE=brave (the launcher
-picks it when ~/.local-claude/brave-search.key exists); fetch strips HTML to
-readable text. Only deps are requests + bs4, already present in this environment.
+(the MCP stdio transport) directly. Only deps are requests + bs4.
+
+Search backends are tried in order (SEARCH_BACKENDS, default
+"ddg,searxng,brave"). One that isn't set up is skipped, unless SEARCH_BACKENDS
+names it; one that fails for now (bot check, rate limit, down) falls through
+to the next; one that is set up wrongly (a rejected key) stops the search and
+is reported, rather than the query silently going elsewhere:
+
+  ddg      DuckDuckGo lite, keyless     best effort: requests are paced,
+                                        results cached, and after a bot check
+                                        it stops contacting DuckDuckGo for a
+                                        cooldown instead of retrying into it
+  searxng  your own SearXNG instance    needs SEARXNG_URL (with the json
+                                        format enabled in settings.yml)
+  brave    Brave Search API             needs an API key in
+                                        ~/.local-claude/brave-search.key
+                                        (or SEARCH_BRAVE_KEY_FILE)
+
+Other knobs (all optional):
+  DDG_MIN_INTERVAL   seconds between DuckDuckGo requests (default 5), counted
+                     across every session on this machine
+  DDG_COOLDOWN       first back-off after a bot check, seconds (default 300);
+                     doubles on each further block, up to DDG_MAX_COOLDOWN
+                     (default 1800), and resets after a successful search
+  SEARCH_CACHE_TTL   seconds to reuse results for a repeated query (default
+                     900; 0 turns caching off)
+  SEARCH_MCP_LOG, LOCAL_SEARCH_LOG_QUERIES  call log, as before
 
 Protocol channel is stdout — all logging goes to stderr.
 """
+import fcntl
 import json
 import os
 import re
 import sys
 import time
+from collections import OrderedDict
+from contextlib import contextmanager
 from urllib.parse import parse_qs, unquote, urlparse
 
 import requests
@@ -21,6 +47,8 @@ from bs4 import BeautifulSoup
 
 UA = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/125.0 Safari/537.36")
+
+MAX_RESULTS = 10  # backends always fetch this many; the cache serves any k <= 10
 
 
 def log(*a):
@@ -32,128 +60,336 @@ def send(msg):
     sys.stdout.flush()
 
 
-# ---- tool implementations ---------------------------------------------------
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, default))
+    except ValueError:
+        return default
+
+
+def _strip_tags(s: str) -> str:
+    # Brave/SearXNG snippets can carry <strong> highlighting.
+    return BeautifulSoup(s or "", "html.parser").get_text(" ", strip=True)
+
+
+def _state_dir() -> str:
+    return os.environ.get("LOCAL_CLAUDE_STATE") or os.path.expanduser("~/.local-claude")
+
+
+class SearchUnavailable(Exception):
+    """A backend could not answer for now: blocked, rate-limited or down.
+    Messages never include the query, since they are logged."""
+
+
+class SearchBlocked(SearchUnavailable):
+    """DuckDuckGo answered with its bot check instead of results."""
+
+
+class SearchSetupError(Exception):
+    """A backend is set up wrongly: the user has to fix something."""
+
+
+# Models retell these to the user, and a vaguer version came out as a claim that
+# the user's configuration blocked search, so say what it is and what it is not.
+def _ddg_refusing(seconds: float) -> str:
+    return ("DuckDuckGo is refusing automated searches from this machine for now (its rate "
+            "limit after a burst of searches; not a configuration problem). No search is "
+            f"sent to it for {max(1, round(seconds / 60))} min, because searching during "
+            "the block prolongs it.")
+
+
+# ---- DuckDuckGo (keyless, best effort) --------------------------------------
 
 def _decode_ddg_href(href: str) -> str:
+    if href.startswith("//"):
+        href = "https:" + href
     if "uddg=" in href:
-        q = parse_qs(urlparse("https:" + href if href.startswith("//") else href).query)
+        q = parse_qs(urlparse(href).query)
         if "uddg" in q:
             return unquote(q["uddg"][0])
     return href
 
 
-class SearchBlocked(Exception):
-    """The search engine refused for now (rate limit, bot check), not a fault here."""
+def parse_ddg_lite(html: str, k: int = MAX_RESULTS):
+    """Pair each result link with the snippet that follows it in the page.
+
+    Walking links and snippets in document order (rather than zipping two
+    separate lists by index) keeps snippets aligned when a result has no
+    snippet, and lets sponsored rows be dropped without shifting the rest.
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    out, cur = [], None
+    for el in soup.select("a.result-link, .result-snippet"):
+        if "result-link" in (el.get("class") or []):
+            cur = None
+            if el.find_parent(class_="result-sponsored"):
+                continue
+            url = _decode_ddg_href(el.get("href", ""))
+            host = urlparse(url).hostname or ""
+            # Ads click through duckduckgo.com/y.js rather than a uddg= wrapper.
+            if not url.startswith(("http://", "https://")) or host.endswith("duckduckgo.com"):
+                continue
+            cur = {"title": el.get_text(" ", strip=True), "url": url, "snippet": ""}
+            out.append(cur)
+        elif cur is not None and not cur["snippet"]:
+            cur["snippet"] = el.get_text(" ", strip=True)
+    return out[:k]
 
 
-def _blocked(r) -> bool:
-    # After a burst of searches DuckDuckGo serves a challenge page ("bots use
-    # DuckDuckGo too"): HTTP 202, an anomaly-modal form, no result links. A
-    # results page is a 200 with result links, even for a query about anomalies.
-    # It may also refuse outright with a 403 "error getting results" page.
-    return r.status_code == 403 or (
-        "result-link" not in r.text and (r.status_code == 202 or "anomaly-modal" in r.text))
+class DuckDuckGo:
+    URL = "https://lite.duckduckgo.com/lite/"
+    BLOCK_MARKERS = ("anomaly-modal", "anomaly.js", 'id="challenge-form"',
+                     "bots use duckduckgo too")
 
+    def __init__(self):
+        self.session = requests.Session()  # keeps cookies and the connection
+        self.session.headers.update({"User-Agent": UA,
+                                     "Accept-Language": "en-US,en;q=0.9"})
+        self.min_interval = _env_float("DDG_MIN_INTERVAL", 5.0)
+        self.base_cooldown = _env_float("DDG_COOLDOWN", 300.0)
+        self.max_cooldown = _env_float("DDG_MAX_COOLDOWN", 1800.0)
+        self.own_state = {}  # stands in for the shared file when it can't be opened
 
-# Models paraphrase this to the user, and a vaguer version came out as a claim
-# that the user's configuration blocked search, so say what it is and is not.
-BLOCKED_MSG = ("DuckDuckGo is temporarily refusing automated searches from this machine "
-               "(its rate limit after a burst of searches). This is not a configuration "
-               "problem and not an empty result. Try again in a few minutes, or web_fetch "
-               "a URL you already know.")
+    @contextmanager
+    def _state(self):
+        """The pacing state {"last", "until", "strikes"}, held exclusively.
 
+        DuckDuckGo limits the IP address, which every session's server on this
+        machine shares, so they share this too, through a file holding only times.
+        """
+        try:
+            fh = open(os.path.join(_state_dir(), "ddg-pacing.json"), "a+")
+        except OSError:  # no state folder: pace this process on its own
+            yield self.own_state
+            return
+        with fh:
+            fcntl.flock(fh, fcntl.LOCK_EX)
+            fh.seek(0)
+            try:
+                st = json.loads(fh.read() or "{}")
+            except ValueError:
+                st = {}
+            if not isinstance(st, dict):
+                st = {}
+            yield st
+            fh.truncate(0)
+            json.dump(st, fh)
 
-def ddg_search(query: str, max_results: int = 5):
-    def parse(html):
-        soup = BeautifulSoup(html, "html.parser")
-        links = soup.select("a.result-link")
-        snippets = soup.select(".result-snippet")
-        out = []
-        for i, a in enumerate(links[:max_results]):
-            out.append({
-                "title": a.get_text(" ", strip=True),
-                "url": _decode_ddg_href(a.get("href", "")),
-                "snippet": snippets[i].get_text(" ", strip=True) if i < len(snippets) else "",
-            })
-        return out
+    def _turn(self):
+        """Wait for this machine's next turn to send a request; SearchBlocked while paused."""
+        with self._state() as st:
+            now = time.time()
+            left = st.get("until", 0) - now
+            if 0 < left <= self.max_cooldown:  # bounded: a clock set back can't stall search
+                raise SearchBlocked(_ddg_refusing(left))
+            # One gate for every request: bursts are what trigger the bot check.
+            time.sleep(min(self.min_interval, max(0.0, st.get("last", 0) + self.min_interval - now)))
+            st["last"] = time.time()
 
-    hdr = {"User-Agent": UA}
-    # GET first (works from probing); POST fallback if the form is returned empty
-    r = requests.get("https://lite.duckduckgo.com/lite/", params={"q": query},
-                     headers=hdr, timeout=20)
-    if _blocked(r):
-        raise SearchBlocked(BLOCKED_MSG)
-    r.raise_for_status()
-    res = parse(r.text)
-    if not res:
-        r = requests.post("https://lite.duckduckgo.com/lite/", data={"q": query},
-                          headers=hdr, timeout=20)
-        if _blocked(r):
-            raise SearchBlocked(BLOCKED_MSG)
+    def _record(self, r):
+        """A bot check starts a pause, longer each time it is still there; a result ends that."""
+        blocked = self._is_blocked(r)
+        with self._state() as st:
+            if blocked:
+                st["strikes"] = min(st.get("strikes", 0) + 1, 16)
+                cool = min(self.base_cooldown * 2 ** (st["strikes"] - 1), self.max_cooldown)
+                st["until"] = time.time() + cool
+            elif r.status_code == 200:
+                st["strikes"] = 0
+        if blocked:
+            log(f"duckduckgo served its bot check; pausing it for {cool:.0f}s "
+                f"(block #{st['strikes']} in a row)")
+            raise SearchBlocked(_ddg_refusing(cool))
+
+    def _is_blocked(self, r) -> bool:
+        if "result-link" in r.text:
+            return False  # a results page, even for a query about "anomalies"
+        if r.status_code in (202, 403, 429):
+            return True
+        host = urlparse(r.url).hostname or ""
+        if not host.endswith("duckduckgo.com"):
+            return True  # redirected away to a challenge host
+        low = r.text.lower()
+        return any(m in low for m in self.BLOCK_MARKERS)
+
+    def search(self, query: str, k: int = MAX_RESULTS):
+        self._turn()
+        # POST, as the lite page's own search form does. One request per search:
+        # each one counts against the limit.
+        r = self.session.post(self.URL, data={"q": query}, timeout=20)
+        self._record(r)
         r.raise_for_status()
-        res = parse(r.text)
-    return res
+        return parse_ddg_lite(r.text, k)
 
 
-class SearchSetupError(Exception):
-    """The configured search engine cannot be used as set up."""
+DDG = DuckDuckGo()
 
+
+# ---- keyed / self-hosted backends -------------------------------------------
 
 def _brave_key_file() -> str:
-    return os.environ.get("SEARCH_BRAVE_KEY_FILE") or os.path.join(
-        os.environ.get("LOCAL_CLAUDE_STATE") or os.path.expanduser("~/.local-claude"),
-        "brave-search.key")
+    return os.environ.get("SEARCH_BRAVE_KEY_FILE") or os.path.join(_state_dir(), "brave-search.key")
 
 
-def brave_search(query: str, max_results: int = 5):
-    # Read per search, so a new key takes effect without restarting the session.
-    path = _brave_key_file()
+def _brave_key() -> str:
+    # A file rather than an environment variable, which every program started
+    # from the shell, cloud sessions included, could read. Read per search, so
+    # a new key works without restarting the session.
     try:
-        with open(path) as fh:
-            key = fh.read().strip()
+        with open(_brave_key_file()) as fh:
+            return fh.read().strip()
     except OSError:
-        key = ""
-    if not key:
-        raise SearchSetupError(f"Brave Search is selected but there is no API key in {path}. "
-                               "This is a configuration problem: tell the user.")
-    r = requests.get("https://api.search.brave.com/res/v1/web/search",
-                     params={"q": query, "count": max_results},
-                     headers={"Accept": "application/json", "X-Subscription-Token": key},
-                     timeout=20)
-    if r.status_code != 200:
+        return ""
+
+
+def brave_search(query: str, k: int = MAX_RESULTS):
+    r = requests.get(
+        "https://api.search.brave.com/res/v1/web/search",
+        params={"q": query, "count": min(k, 20)},
+        headers={"Accept": "application/json", "X-Subscription-Token": _brave_key()},
+        timeout=20)
+    if r.status_code == 429:
+        raise SearchUnavailable("Brave Search refused the search (HTTP 429): its rate limit, "
+                                "or the account's monthly credit is used up.")
+    try:
+        body = r.json() if r.status_code >= 400 else {}
+    except ValueError:
+        body = {}
+    err = (body.get("error") or {}) if isinstance(body, dict) else {}
+    if r.status_code in (401, 403) or err.get("code") == "SUBSCRIPTION_TOKEN_INVALID":
+        raise SearchSetupError(f"Brave Search rejected the API key in {_brave_key_file()} "
+                               f"(HTTP {r.status_code}). This is a configuration problem: "
+                               "tell the user.")
+    if r.status_code >= 400:
+        raise SearchUnavailable(f"Brave Search answered HTTP {r.status_code}.")
+    items = (r.json().get("web") or {}).get("results") or []
+    return [{"title": _strip_tags(i.get("title", "")), "url": i["url"],
+             "snippet": _strip_tags(i.get("description", ""))}
+            for i in items if i.get("url")][:k]
+
+
+def searxng_search(query: str, k: int = MAX_RESULTS):
+    base = os.environ["SEARXNG_URL"].rstrip("/")
+    r = requests.get(f"{base}/search", params={"q": query, "format": "json"},
+                     headers={"Accept": "application/json", "User-Agent": UA},
+                     timeout=25)
+    if r.status_code == 403:
+        raise SearchSetupError("SearXNG refused format=json; add `json` under "
+                               "search.formats in its settings.yml. This is a "
+                               "configuration problem: tell the user.")
+    if r.status_code >= 400:
+        raise SearchUnavailable(f"SearXNG answered HTTP {r.status_code}.")
+    data = r.json()
+    items = data.get("results") or []
+    if not items and data.get("unresponsive_engines"):
+        # Its upstream engines (often including DuckDuckGo) are blocking it too.
+        names = ", ".join(str(e[0]) if isinstance(e, (list, tuple)) and e else str(e)
+                          for e in data["unresponsive_engines"])
+        raise SearchUnavailable(f"SearXNG's engines are failing ({names}).")
+    return [{"title": _strip_tags(i.get("title", "")), "url": i["url"],
+             "snippet": _strip_tags(i.get("content", ""))}
+            for i in items if i.get("url")][:k]
+
+
+# name: (label, what it lacks to run or None, search function)
+BACKENDS = {
+    "ddg":     ("DuckDuckGo", lambda: None, DDG.search),
+    "searxng": ("SearXNG", lambda: None if os.environ.get("SEARXNG_URL") else "SEARXNG_URL",
+                searxng_search),
+    "brave":   ("Brave Search", lambda: None if _brave_key() else f"an API key in {_brave_key_file()}",
+                brave_search),
+}
+
+
+def _order():
+    """The backends to try, in order, and whether the user named them (SEARCH_BACKENDS)."""
+    chosen = os.environ.get("SEARCH_BACKENDS", "").strip()
+    return [b.strip().lower() for b in (chosen or "ddg,searxng,brave").split(",") if b.strip()], bool(chosen)
+
+
+# ---- cache + backend chain --------------------------------------------------
+
+_cache: "OrderedDict[str, tuple]" = OrderedDict()
+_CACHE_MAX = 256
+
+
+def _cache_key(query: str) -> str:
+    return " ".join(query.split()).lower()
+
+
+def _cache_get(key):
+    ttl = _env_float("SEARCH_CACHE_TTL", 900.0)
+    hit = _cache.get(key)
+    if hit and time.monotonic() - hit[0] < ttl:
+        _cache.move_to_end(key)
+        return hit[1]
+    _cache.pop(key, None)
+    return None
+
+
+def _cache_put(key, value):
+    if _env_float("SEARCH_CACHE_TTL", 900.0) <= 0:
+        return
+    _cache[key] = (time.monotonic(), value)
+    _cache.move_to_end(key)
+    while len(_cache) > _CACHE_MAX:
+        _cache.popitem(last=False)
+
+
+def run_search(query: str):
+    """Return (backend_name, results).
+
+    Raises SearchUnavailable if every backend failed for now, and SearchSetupError
+    as soon as one is set up wrongly: the user should hear of a broken key rather
+    than have the query silently go elsewhere.
+    """
+    key = _cache_key(query)
+    cached = _cache_get(key)
+    if cached is not None:
+        return cached
+
+    order, chosen = _order()
+    errors, empty_from = [], None
+    for name in order:
         try:
-            err = r.json().get("error") or {}
-        except ValueError:
-            err = {}
-        if err.get("code") == "SUBSCRIPTION_TOKEN_INVALID" or r.status_code in (401, 403):
-            raise SearchSetupError(f"Brave Search rejected the API key in {path} "
-                                   f"(HTTP {r.status_code}). This is a configuration problem: "
-                                   "tell the user.")
-        if r.status_code == 429:
-            raise SearchBlocked("Brave Search refused the search (HTTP 429): its rate limit, "
-                                "or the account's monthly credit is used up. Try again later, "
-                                "or web_fetch a URL you already know.")
-        raise RuntimeError(f"Brave Search answered HTTP {r.status_code}: "
-                           f"{err.get('detail') or r.reason}")
-    out = []
-    for x in ((r.json().get("web") or {}).get("results") or [])[:max_results]:
-        out.append({
-            "title": x.get("title", ""),
-            "url": x.get("url", ""),
-            # descriptions mark the matched words with <strong>
-            "snippet": BeautifulSoup(x.get("description", ""), "html.parser").get_text(),
-        })
-    return out
+            if name not in BACKENDS:
+                raise SearchSetupError(f"SEARCH_BACKENDS names '{name}', which is not a search "
+                                       "backend (use ddg, searxng or brave). This is a "
+                                       "configuration problem: tell the user.")
+            label, lacks, fn = BACKENDS[name]
+            missing = lacks()
+            if missing and not chosen:
+                continue
+            if missing:
+                raise SearchSetupError(f"SEARCH_BACKENDS names {label}, which needs {missing}. "
+                                       "This is a configuration problem: tell the user.")
+            res = fn(query, MAX_RESULTS)
+        except SearchSetupError as e:
+            log(f"backend {name} set up wrongly")
+            raise SearchSetupError(" ".join(errors + [f"Web search could not run: {e}"]))
+        except SearchUnavailable as e:
+            log(f"backend {name} unavailable: {e}")
+            errors.append(str(e))
+            continue
+        except (requests.RequestException, ValueError) as e:  # network, bad JSON
+            log(f"backend {name} failed: {type(e).__name__}")  # message can hold the URL
+            errors.append(f"{label} could not be reached ({type(e).__name__}).")
+            continue
+        if res:
+            _cache_put(key, (name, res))
+            return name, res
+        empty_from = empty_from or name  # try the next backend before giving up
+
+    if empty_from:
+        _cache_put(key, (empty_from, []))
+        return empty_from, []
+
+    raise SearchUnavailable("Web search is unavailable right now; this is not an empty "
+                            "result. " + " ".join(errors) + " Try again later, or "
+                            "web_fetch a URL you already know.")
 
 
-def search(query: str, max_results: int = 5):
-    engine = os.environ.get("LOCAL_SEARCH_ENGINE") or "duckduckgo"
-    if engine == "brave":
-        return brave_search(query, max_results)
-    if engine == "duckduckgo":
-        return ddg_search(query, max_results)
-    raise SearchSetupError(f"unknown LOCAL_SEARCH_ENGINE '{engine}' (use duckduckgo or brave)")
-
+# ---- web_fetch ----------------------------------------------------------------
 
 def web_fetch(url: str, max_chars: int = 6000) -> str:
     if not re.match(r"^https?://", url):
@@ -177,6 +413,8 @@ def web_fetch(url: str, max_chars: int = 6000) -> str:
     return text or "(page had no extractable text)"
 
 
+# ---- dispatch -----------------------------------------------------------------
+
 def dispatch_tool(name: str, args: dict) -> str:
     logpath = os.environ.get("SEARCH_MCP_LOG")
     if logpath:
@@ -189,12 +427,15 @@ def dispatch_tool(name: str, args: dict) -> str:
         except OSError:
             pass
     if name == "web_search":
-        query = args["query"]
-        k = max(1, min(int(args.get("max_results", 5) or 5), 10))
-        res = search(query, k)
+        query = str(args["query"]).strip()
+        if not query:
+            raise ValueError("query is empty")
+        k = max(1, min(int(args.get("max_results", 5) or 5), MAX_RESULTS))
+        source, res = run_search(query)
+        res = res[:k]
         if not res:
             return f"No results found for: {query}"
-        lines = [f"Web search results for: {query}", ""]
+        lines = [f"Web search results for: {query} (via {source})", ""]
         for i, r in enumerate(res, 1):
             lines.append(f"{i}. {r['title']}")
             lines.append(f"   URL: {r['url']}")
@@ -212,10 +453,11 @@ def dispatch_tool(name: str, args: dict) -> str:
 TOOLS = [
     {
         "name": "web_search",
-        "description": ("Search the web for current information. Returns a "
-                        "numbered list of results with title, URL, and snippet. Use for "
-                        "up-to-date facts, library docs, error messages, or anything not "
-                        "already in the local codebase."),
+        "description": ("Search the web for current information. Returns a numbered list "
+                        "of results with title, URL, and snippet. Use for up-to-date facts, "
+                        "library docs, error messages, or anything not already in the local "
+                        "codebase. Repeated queries are answered from a short cache; if it "
+                        "reports search as unavailable, don't retry immediately."),
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -251,7 +493,7 @@ def handle(req: dict):
         return {"jsonrpc": "2.0", "id": rid, "result": {
             "protocolVersion": pv,
             "capabilities": {"tools": {}},
-            "serverInfo": {"name": "local-search", "version": "1.0.0"}}}
+            "serverInfo": {"name": "local-search", "version": "1.1.0"}}}
     if method == "tools/list":
         return {"jsonrpc": "2.0", "id": rid, "result": {"tools": TOOLS}}
     if method == "prompts/list":
@@ -280,7 +522,8 @@ def handle(req: dict):
 
 
 def main():
-    log("started")
+    usable = [b for b in _order()[0] if b in BACKENDS and not BACKENDS[b][1]()]
+    log(f"started; search backends: {', '.join(usable) or 'none'}")
     while True:
         line = sys.stdin.readline()
         if not line:
