@@ -152,6 +152,42 @@ the separation stay in `~/.claude`. With `LOCAL_STORAGE=none` nothing is kept.
 Expected once: local sessions have their own Claude Code settings, so the
 first-run screens appear again, and each project folder is trusted once more.
 
+## Seeing what the model reads and writes
+
+From the most convenient to the most raw:
+
+1. **In a session:** Ctrl+O switches Claude Code to its detailed view — the
+   model's thinking, every tool call and the full tool results.
+2. **After a session:** `~/.local-claude/claude/projects/<folder>/<session>.jsonl`
+   holds every message as JSON (with the default `LOCAL_STORAGE=separate`). It does
+   not include Claude Code's system prompt or tool definitions.
+3. **The exact requests and replies:** restart the server with verbose logging.
+
+   ```bash
+   local-claude stop
+   LOCAL_LLAMA_ARGS="--verbose" local-claude start
+   grep 'converted request' ~/.local-claude/llama-server.log   # full input: system prompt, tools, messages
+   grep 'Parsed message' ~/.local-claude/llama-server.log      # each finished reply: text, thinking, tool calls
+   ```
+
+   This writes every prompt to the log. Empty it when you are done:
+   `: > ~/.local-claude/llama-server.log`.
+4. **The raw text, as the model sees it:** render a conversation through the
+   chat template, then send that text and read the output before any parsing —
+   the control tokens (`<|im_start|>`), the thinking and the tool-call markup
+   (`<tool_call><function=…>`) all show.
+
+   ```bash
+   curl -s http://127.0.0.1:8080/apply-template -H 'Content-Type: application/json' \
+     -d '{"messages":[{"role":"user","content":"Hi"}]}'          # -> {"prompt": "..."}
+   curl -s http://127.0.0.1:8080/completion -H 'Content-Type: application/json' \
+     -d '{"prompt": "<the prompt from above>", "n_predict": 2000}'
+   ```
+
+   Pass tool definitions as `"tools": [...]` to `/apply-template` to see how the
+   template presents them. Leave `n_predict` generous: the thinking comes first.
+   With `LOCAL_API_KEY` set, add `-H "Authorization: Bearer <key>"`.
+
 ## Claude Code says `unrecognized_model`
 
 Expected, and cosmetic. Local models are not in the client's catalog. The context
