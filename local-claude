@@ -43,8 +43,13 @@
 #                                      (default: ~/.local-claude/CLAUDE.md, if present)
 #   LOCAL_SEARCH=0                     disable the local web-search MCP server
 #   LOCAL_BUILTIN_WEBFETCH=1           also allow Claude Code's own WebFetch (off by default)
+#   LOCAL_BUILTIN_WEBSEARCH=1          also allow its WebSearch (off: cannot work locally)
 #   LOCAL_STORAGE=separate             where sessions keep history and memory:
 #                                      separate (~/.local-claude/claude), none, shared (~/.claude)
+#   LOCAL_BACKGROUND_TRAFFIC=1 / LOCAL_FEEDBACK=1 / LOCAL_REMOTE=1
+#                                      allow background traffic / feedback reports /
+#                                      mirroring, remote control, cross-session messages
+#   Any Claude Code variable or --settings key you set yourself wins over these defaults.
 #   LOCAL_RULES=""                     disable small-model rule injection
 
 set -euo pipefail
@@ -624,13 +629,26 @@ export API_TIMEOUT_MS="${API_TIMEOUT_MS:-1800000}"
 export CLAUDE_CODE_MAX_CONTEXT_TOKENS="${CLAUDE_CODE_MAX_CONTEXT_TOKENS:-$(( EFFECTIVE_CTX - 8192 ))}"
 
 # ---- Keep everything on this machine ----------------------------------------
-export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1  # no telemetry/update/error pings
-export DISABLE_AUTOUPDATER=1
-export DISABLE_TELEMETRY=1
-export DISABLE_ERROR_REPORTING=1
-# A fresh Claude Code folder also installs the official plugin marketplace from
-# downloads.claude.ai on its first run, and may check its own installation.
-export DISABLE_INSTALLATION_CHECKS=1 CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL=1
+# Every setting below is a default: a variable you set yourself, even to an empty
+# value, is left alone.
+default_env() { [[ -v $1 ]] || export "$1=$2"; }
+
+# No background traffic to Anthropic: telemetry, error reports, update and
+# installation checks, and the plugin marketplace Claude Code installs on its
+# first run in a fresh folder (from downloads.claude.ai).
+if [[ "${LOCAL_BACKGROUND_TRAFFIC:-0}" != "1" ]]; then
+  for v in CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC DISABLE_AUTOUPDATER DISABLE_TELEMETRY \
+           DISABLE_ERROR_REPORTING DISABLE_INSTALLATION_CHECKS \
+           CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL; do
+    default_env "$v" 1
+  done
+fi
+# No feedback reports, which would send the session's transcript.
+if [[ "${LOCAL_FEEDBACK:-0}" != "1" ]]; then
+  for v in DISABLE_BUG_COMMAND DISABLE_FEEDBACK_COMMAND CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY; do
+    default_env "$v" 1
+  done
+fi
 
 # Where local sessions keep what Claude Code stores: transcripts (/resume), the
 # up-arrow prompt history, auto-memory notes and file snapshots (/rewind).
@@ -647,8 +665,9 @@ case "${LOCAL_STORAGE:=separate}" in
   *) echo "[local-claude] LOCAL_STORAGE must be separate, none or shared (got: $LOCAL_STORAGE)" >&2; exit 1 ;;
 esac
 if [[ "$LOCAL_STORAGE" == "none" ]]; then
-  export CLAUDE_CODE_SKIP_PROMPT_HISTORY=1        # no transcript, no prompt history
-  export CLAUDE_CODE_DISABLE_FILE_CHECKPOINTING=1 CLAUDE_CODE_DISABLE_AUTO_MEMORY=1
+  default_env CLAUDE_CODE_SKIP_PROMPT_HISTORY 1        # no transcript, no prompt history
+  default_env CLAUDE_CODE_DISABLE_FILE_CHECKPOINTING 1
+  default_env CLAUDE_CODE_DISABLE_AUTO_MEMORY 1
 fi
 
 # Marks this session for hooks that only apply to the local stack
@@ -708,12 +727,14 @@ fi
 # are switched off by default, and the domain check is skipped as well.
 # LOCAL_BUILTIN_WEBFETCH=1 allows WebFetch again: it fetches on this machine and
 # summarises with the local model, so with the check skipped it stays local.
-# WebSearch stays off regardless: Anthropic's servers run its searches, so
-# against a local model it returns nothing and the model answers from memory.
-if [[ "${LOCAL_BUILTIN_WEBFETCH:-0}" == "1" ]]; then
-  EXTRA_ARGS+=(--disallowedTools "WebSearch")
-else
-  EXTRA_ARGS+=(--disallowedTools "WebFetch,WebSearch")
+# WebSearch is off too: Anthropic's servers run its searches, so against a
+# local model it returns nothing and the model answers from memory as if it had
+# searched. LOCAL_BUILTIN_WEBSEARCH=1 allows it anyway.
+DISALLOW=()
+[[ "${LOCAL_BUILTIN_WEBFETCH:-0}" == "1" ]] || DISALLOW+=(WebFetch)
+[[ "${LOCAL_BUILTIN_WEBSEARCH:-0}" == "1" ]] || DISALLOW+=(WebSearch)
+if [[ ${#DISALLOW[@]} -gt 0 ]]; then
+  EXTRA_ARGS+=(--disallowedTools "$(IFS=,; echo "${DISALLOW[*]}")")
 fi
 
 # The same goes for your global ~/.claude/CLAUDE.md: it is written for the cloud
@@ -724,21 +745,38 @@ EXCLUDE=""
 if [[ "${LOCAL_GLOBAL_CLAUDE_MD:-0}" != "1" ]]; then
   EXCLUDE="$CLOUD_CONFIG_DIR/CLAUDE.md"
 fi
-SETTINGS="$(python3 -c '
-import json, sys
-s = {"skipWebFetchPreflight": True}
-if sys.argv[1]:
-    s["claudeMdExcludes"] = [sys.argv[1]]
-print(json.dumps(s))' "$EXCLUDE")"
-EXTRA_ARGS+=(--settings "$SETTINGS")
-# A --settings of your own replaces this one rather than adding to it, which
-# would bring back the global CLAUDE.md and, with LOCAL_BUILTIN_WEBFETCH=1, the
-# domain check that contacts Anthropic.
-for a in "$@"; do
-  case "$a" in --settings|--settings=*)
-    echo "[local-claude] note: your --settings replaces the launcher's; copy this into yours to keep its effect: $SETTINGS" >&2
-    break ;;
+# The launcher's settings, merged with any --settings of yours, yours winning key
+# by key: Claude Code would otherwise let one --settings replace the other.
+# LOCAL_REMOTE=1 drops the three that keep the session from leaving the machine.
+USER_SETTINGS=() ARGS=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --settings)   USER_SETTINGS+=("${2:-}"); shift; [[ $# -gt 0 ]] && shift ;;
+    --settings=*) USER_SETTINGS+=("${1#--settings=}"); shift ;;
+    *)            ARGS+=("$1"); shift ;;
   esac
 done
+set -- "${ARGS[@]}"
+SETTINGS="$(LOCAL_REMOTE="${LOCAL_REMOTE:-0}" python3 -c '
+import json, os, sys
+s = {"skipWebFetchPreflight": True}        # see the web tools above
+if os.environ["LOCAL_REMOTE"] != "1":
+    s.update(autoUploadSessions=False,     # no mirroring to claude.ai
+             remoteControlAtStartup=False,
+             crossSessionInbound="refuse") # other sessions cannot message in
+if sys.argv[1]:
+    s["claudeMdExcludes"] = [sys.argv[1]]
+for src in sys.argv[2:]:
+    try:
+        u = json.loads(src) if src.lstrip().startswith("{") else json.load(open(os.path.expanduser(src)))
+    except (OSError, ValueError) as e:
+        sys.exit(f"[local-claude] cannot read --settings {src}: {e}")
+    for k, v in u.items():
+        if k == "claudeMdExcludes" and isinstance(v, list):
+            s[k] = s.get(k, []) + [p for p in v if p not in s.get(k, [])]
+        else:
+            s[k] = v
+print(json.dumps(s))' "$EXCLUDE" "${USER_SETTINGS[@]}")"
+EXTRA_ARGS+=(--settings "$SETTINGS")
 
 exec claude --model "$LOCAL_MODEL" "${EXTRA_ARGS[@]}" "$@"

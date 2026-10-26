@@ -99,6 +99,15 @@ busy-loop load is CPU-only; a memory-bandwidth-heavy neighbour is untested.
 
 ## Everything else
 
+Every default the launcher sets can be changed. Besides the options below, a Claude
+Code variable you set yourself, even to an empty value, is left alone (e.g.
+`CLAUDE_CODE_DISABLE_AUTO_MEMORY=0 LOCAL_STORAGE=none local-claude`), and a
+`--settings` you pass is merged with the launcher's, key by key, yours winning.
+Session options (storage, instructions, web tools, the switches above) apply to the
+next `local-claude`. Server options (split, micro-batch, threads, context, KV type,
+load mode, thinking) apply when the server starts: run `local-claude stop` first,
+or a running server is reused unchanged.
+
 | Env | Default | When to touch it |
 |---|---|---|
 | `LOCAL_CTX` | from VRAM (131072 on 8 GB) | Must exceed 100k, or Claude Code overruns the server before it auto-compacts |
@@ -117,6 +126,10 @@ busy-loop load is CPU-only; a memory-bandwidth-heavy neighbour is untested.
 | `LOCAL_TEMPLATE` | auto-patched | `0` uses the model's stock chat template — see DESIGN-NOTES |
 | `LOCAL_SEARCH` | 1 | `0` drops the web-search MCP server, leaving no web access at all: Claude Code's own web tools are off by default |
 | `LOCAL_STORAGE` | `separate` | Where local sessions keep transcripts (`/resume`), prompt history, auto-memory and file snapshots (`/rewind`). `separate`: `~/.local-claude/claude`, never seen by cloud sessions. `none`: nothing is kept. `shared`: `~/.claude`, like any Claude Code session, so cloud sessions can see it. Per session |
+| `LOCAL_BUILTIN_WEBSEARCH` | 0 | `1` allows Claude Code's own WebSearch. It cannot work against a local model: Anthropic's servers run its searches, so it returns nothing and the model answers from memory |
+| `LOCAL_BACKGROUND_TRAFFIC` | 0 | `1` allows Claude Code's background traffic to Anthropic: telemetry, error reports, update and installation checks, and the plugin marketplace it installs on a first run |
+| `LOCAL_FEEDBACK` | 0 | `1` allows `/bug`, `/feedback` and feedback surveys, which send the session's transcript to Anthropic |
+| `LOCAL_REMOTE` | 0 | `1` allows mirroring sessions to claude.ai, Remote Control, and messages from your other Claude sessions |
 | `LOCAL_BUILTIN_WEBFETCH` | 0 | `1` allows Claude Code's own WebFetch. It fetches on this machine and summarises with the local model; the launcher skips its domain check, which would otherwise ask Anthropic about every domain. Its WebSearch stays off: Anthropic's servers run those searches, so locally it returns nothing and the model answers from memory |
 | `LOCAL_CLAUDE_MD` | `~/.local-claude/CLAUDE.md` | Your standing instructions for local sessions, in every project: the local counterpart of `~/.claude/CLAUDE.md`. Loaded only if the file exists; keep it short, it is sent with every session |
 | `LOCAL_GLOBAL_CLAUDE_MD` | 0 | `1` also loads your global `~/.claude/CLAUDE.md`, which local sessions skip by default (~8k tokens on the reference machine) |
