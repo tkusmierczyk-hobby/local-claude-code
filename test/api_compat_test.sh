@@ -5,9 +5,10 @@
 #
 # Usage: ./api_compat_test.sh [model] [base-url]
 set -u
-BASE="${2:-http://127.0.0.1:8080}"
+BASE="${2:-http://127.0.0.1:${LOCAL_PORT:-8080}}"
+KEY="${LOCAL_API_KEY:-${LLAMA_API_KEY:-local}}"   # the server's key, if it has one
 # llama-server serves whichever model it loaded, but the field must still be sent.
-MODEL="${1:-$(curl -sf "$BASE/props" 2>/dev/null | python3 -c 'import sys,json;print(json.load(sys.stdin).get("model_alias") or "local")' 2>/dev/null || echo local)}"
+MODEL="${1:-$(curl -sf -H "x-api-key: $KEY" "$BASE/props" 2>/dev/null | python3 -c 'import sys,json;print(json.load(sys.stdin).get("model_alias") or "local")' 2>/dev/null || echo local)}"
 PASS=0; FAIL=0
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 
@@ -20,7 +21,7 @@ echo "== 1. basic non-streaming message =="
 # max_tokens has to be generous: these are thinking models, and a small budget is
 # spent entirely inside the `thinking` block, leaving no text to assert on.
 R=$(curl -sf -X POST "$BASE/v1/messages" \
-  -H "content-type: application/json" -H "x-api-key: local" -H "anthropic-version: 2023-06-01" \
+  -H "content-type: application/json" -H "x-api-key: $KEY" -H "anthropic-version: 2023-06-01" \
   -d '{"model":"'"$MODEL"'","max_tokens":4096,"messages":[{"role":"user","content":"Say OK and nothing else."}]}')
 echo "$R" | python3 -c '
 import json,sys
@@ -35,7 +36,7 @@ check "basic message" $?
 
 echo "== 2. system as array of blocks + cache_control (Claude Code shape) =="
 R=$(curl -sf -X POST "$BASE/v1/messages" \
-  -H "content-type: application/json" -H "authorization: Bearer local" -H "anthropic-version: 2023-06-01" \
+  -H "content-type: application/json" -H "authorization: Bearer $KEY" -H "anthropic-version: 2023-06-01" \
   -d '{"model":"'"$MODEL"'","max_tokens":512,
        "system":[{"type":"text","text":"You are a terse assistant.","cache_control":{"type":"ephemeral"}}],
        "metadata":{"user_id":"test-user"},
@@ -45,7 +46,7 @@ check "system blocks + cache_control + metadata" $?
 
 echo "== 3. tools + tool_choice auto, expect tool_use block =="
 R=$(curl -sf -X POST "$BASE/v1/messages" \
-  -H "content-type: application/json" -H "x-api-key: local" -H "anthropic-version: 2023-06-01" \
+  -H "content-type: application/json" -H "x-api-key: $KEY" -H "anthropic-version: 2023-06-01" \
   -d '{"model":"'"$MODEL"'","max_tokens":512,
        "tools":[{"name":"list_files","description":"List files in a directory. Use this whenever asked about files.","input_schema":{"type":"object","properties":{"path":{"type":"string","description":"directory path"}},"required":["path"]}}],
        "messages":[{"role":"user","content":"Use the list_files tool to list files in /tmp. You must call the tool."}]}')
@@ -60,7 +61,7 @@ check "tool_use emitted" $?
 
 echo "== 4. tool_result round-trip =="
 R=$(curl -sf -X POST "$BASE/v1/messages" \
-  -H "content-type: application/json" -H "x-api-key: local" -H "anthropic-version: 2023-06-01" \
+  -H "content-type: application/json" -H "x-api-key: $KEY" -H "anthropic-version: 2023-06-01" \
   -d '{"model":"'"$MODEL"'","max_tokens":512,
        "tools":[{"name":"list_files","description":"List files in a directory","input_schema":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}}],
        "messages":[
@@ -73,7 +74,7 @@ check "tool_result round-trip understood" $?
 
 echo "== 5. streaming SSE =="
 curl -sfN -X POST "$BASE/v1/messages" \
-  -H "content-type: application/json" -H "x-api-key: local" -H "anthropic-version: 2023-06-01" \
+  -H "content-type: application/json" -H "x-api-key: $KEY" -H "anthropic-version: 2023-06-01" \
   -d '{"model":"'"$MODEL"'","max_tokens":512,"stream":true,"messages":[{"role":"user","content":"Count 1 2 3"}]}' \
   | head -40 > "$TMP/sse.txt"
 grep -q "event: message_start" "$TMP/sse.txt" && grep -q "content_block_delta" "$TMP/sse.txt"
@@ -84,13 +85,13 @@ echo "== 6. count_tokens endpoint =="
 # ollama 404s this and the client silently falls back to estimating; llama-server
 # implements it, which makes Claude Code's context accounting exact.
 R=$(curl -s -o "$TMP/ct.json" -w "%{http_code}" -X POST "$BASE/v1/messages/count_tokens" \
-  -H "content-type: application/json" -H "x-api-key: local" -H "anthropic-version: 2023-06-01" \
+  -H "content-type: application/json" -H "x-api-key: $KEY" -H "anthropic-version: 2023-06-01" \
   -d '{"model":"'"$MODEL"'","messages":[{"role":"user","content":"Hello world"}]}')
 echo "  http=$R body=$(head -c 200 "$TMP/ct.json")"
 [ "$R" = "200" ]; check "count_tokens" $?
 
 echo "== 7. server reports a usable context window =="
-curl -sf "$BASE/props" 2>/dev/null | python3 -c '
+curl -sf -H "x-api-key: $KEY" "$BASE/props" 2>/dev/null | python3 -c '
 import json,sys
 p=json.load(sys.stdin)
 n=p.get("default_generation_settings",{}).get("n_ctx",0)

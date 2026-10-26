@@ -51,6 +51,9 @@
 #                                      mirroring, remote control, cross-session messages
 #   Any Claude Code variable or --settings key you set yourself wins over these defaults.
 #   LOCAL_RULES=""                     disable small-model rule injection
+#   LOCAL_WEBUI=1                      serve llama.cpp's own chat page (off by default)
+#   LOCAL_API_KEY=<key>                require this key on the server; sessions send it
+#   LOCAL_HOST=127.0.0.1               address the server listens on (this machine only)
 
 set -euo pipefail
 
@@ -68,6 +71,12 @@ MODELS_DIR="${MODELS_DIR:-$HOME/models}"
 LOCAL_BACKEND="${LOCAL_BACKEND:-llamacpp}"
 LOCAL_HOST="${LOCAL_HOST:-127.0.0.1}"
 LOCAL_PORT="${LOCAL_PORT:-8080}"
+# An API key for the server, for when it listens beyond this machine. Passed to
+# llama-server through the environment, not its command line, which `ps` shows
+# to every user; Claude Code gets it as its auth token, and the launcher's own
+# requests send it too. LLAMA_API_KEY, llama.cpp's own name, counts as well.
+API_KEY="${LOCAL_API_KEY:-${LLAMA_API_KEY:-}}"
+AUTH=(); [[ -n "$API_KEY" ]] && AUTH=(-H "Authorization: Bearer $API_KEY")
 mkdir -p "$STATE_DIR"
 
 # install.sh writes hardware-derived defaults here. They are loaded as HWENV_*,
@@ -353,7 +362,7 @@ start_llama() {
     --cache-ram "${LOCAL_CACHE_RAM:-2048}"  # keep evicted prefixes, but the experts
                                             # need the RAM more than the cache does
     --jinja                       # tool calling needs the model's own template
-    --no-webui
+    "$([[ "${LOCAL_WEBUI:-0}" == "1" ]] && echo --webui || echo --no-webui)"   # llama.cpp's chat page
   )
   # The expert split only means something for a MoE model; a dense one has no
   # expert tensors for the flag to move.
@@ -419,7 +428,9 @@ start_llama() {
   echo "[local-claude] starting llama-server: $(basename "$model") ctx=$ctx (${slots} slots, shared) ncmoe=$ncmoe ubatch=$ubatch threads=$THREADS${PIN_CPUS:+ pinned to CPUs $PIN_CPUS} dev=${dev:-auto}${VISION_NOTE:-}" >&2
   local log_lines
   log_lines="$(wc -l 2>/dev/null < "$STATE_DIR/llama-server.log" || echo 0)"
-  LD_LIBRARY_PATH="$LLAMA_DIR" nohup "$LLAMA_DIR/llama-server" "${args[@]}" \
+  # No key: make sure an empty LLAMA_API_KEY cannot reach the server either.
+  local keyenv=(-u LLAMA_API_KEY); [[ -n "$API_KEY" ]] && keyenv=(LLAMA_API_KEY="$API_KEY")
+  env "${keyenv[@]}" LD_LIBRARY_PATH="$LLAMA_DIR" nohup "$LLAMA_DIR/llama-server" "${args[@]}" \
     >>"$STATE_DIR/llama-server.log" 2>&1 &
   echo $! > "$STATE_DIR/llama.pid"
   echo "$model" > "$STATE_DIR/model"
@@ -496,8 +507,10 @@ if [[ "${1:-}" == "status" ]]; then
   echo "backend:  $LOCAL_BACKEND"
   echo "binaries: $LLAMA_DIR ($(LD_LIBRARY_PATH="$LLAMA_DIR" "$LLAMA_DIR/llama-server" --version 2>&1 | head -1 | sed 's/version: //'))"
   if llama_up; then
-    props="$(curl -sf "http://$LOCAL_HOST:$LOCAL_PORT/props" 2>/dev/null || echo '{}')"
-    echo "server:   UP on http://$LOCAL_HOST:$LOCAL_PORT"
+    props="$(curl -sf "${AUTH[@]}" "http://$LOCAL_HOST:$LOCAL_PORT/props" 2>/dev/null || echo '{}')"
+    echo "server:   UP on http://$LOCAL_HOST:$LOCAL_PORT$([[ "$LOCAL_HOST" == 127.* || "$LOCAL_HOST" == localhost ]] && echo ' (this machine only)' || echo ' (reachable from the network)')"
+    echo "api key:  $([[ "$(curl -s -o /dev/null -w '%{http_code}' "http://$LOCAL_HOST:$LOCAL_PORT/props")" == 401 ]] && echo 'required by the running server' || echo 'none (anyone who can reach the server can use it)')"
+    echo "web page: $([[ "$(curl -s --compressed -o /dev/null -w '%{http_code}' "http://$LOCAL_HOST:$LOCAL_PORT/")" == 200 ]] && echo "on, http://$LOCAL_HOST:$LOCAL_PORT/" || echo 'off')"
     echo "model:    $(python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('model_path','?'))" <<<"$props" 2>/dev/null || echo '?')"
     echo "ctx:      $(python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('default_generation_settings',{}).get('n_ctx','?'))" <<<"$props" 2>/dev/null || echo '?')"
   else
@@ -599,14 +612,24 @@ else
   # an already-running server may have been started with a different context,
   # and telling Claude Code a window larger than the real one means requests
   # get rejected mid-session instead of compacted.
-  EFFECTIVE_CTX="$(curl -sf "$BASE_URL/props" 2>/dev/null \
+  # A server started with a key refuses a session without it (and one started
+  # without a key ignores the session's) — say so now, not as 401s mid-session.
+  key_code="$(curl -s -o /dev/null -w '%{http_code}' "$BASE_URL/props")"
+  if [[ "$key_code" == 401 && -z "$API_KEY" ]]; then
+    echo "[local-claude] the running server requires an API key: set LOCAL_API_KEY" >&2; exit 1
+  elif [[ "$key_code" == 401 ]] && [[ "$(curl -s -o /dev/null -w '%{http_code}' "${AUTH[@]}" "$BASE_URL/props")" == 401 ]]; then
+    echo "[local-claude] the running server rejects this LOCAL_API_KEY" >&2; exit 1
+  elif [[ "$key_code" != 401 && -n "$API_KEY" ]]; then
+    echo "[local-claude] note: the running server was started without an API key; 'local-claude stop' to restart it with one" >&2
+  fi
+  EFFECTIVE_CTX="$(curl -sf "${AUTH[@]}" "$BASE_URL/props" 2>/dev/null \
     | python3 -c "import sys,json;print(json.load(sys.stdin).get('default_generation_settings',{}).get('n_ctx',0))" 2>/dev/null || echo 0)"
   [[ "${EFFECTIVE_CTX:-0}" -lt 8192 ]] && EFFECTIVE_CTX="${LOCAL_CTX:-${HWENV_LOCAL_CTX:-131072}}"
 fi
 
 # ---- Point Claude Code at the local backend ---------------------------------
 export ANTHROPIC_BASE_URL="$BASE_URL"
-export ANTHROPIC_AUTH_TOKEN="local"    # required by the client, ignored by the server
+export ANTHROPIC_AUTH_TOKEN="${API_KEY:-local}"   # the server's key, if it has one
 export ANTHROPIC_API_KEY=""
 export ANTHROPIC_MODEL="$LOCAL_MODEL"
 export ANTHROPIC_DEFAULT_SONNET_MODEL="$LOCAL_MODEL"

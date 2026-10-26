@@ -89,14 +89,17 @@ echo
 # generation (decode). cache_prompt=false so every run pays full prefill.
 measure() {
   python3 - "$BASE" <<'PY'
-import json, sys, urllib.request
+import json, os, sys, urllib.request
 base = sys.argv[1]
 # ~9.5k tokens of code-shaped text: representative of what Claude Code sends.
 prompt = "Summarize this module:\n" + "".join(
     f"def f{i}(x):\n    \"\"\"helper {i}\"\"\"\n    return x * {i} + {i % 7}\n\n" for i in range(340))
 body = {"prompt": prompt, "n_predict": 128, "cache_prompt": False, "temperature": 0}
-req = urllib.request.Request(base + "/completion", data=json.dumps(body).encode(),
-                             headers={"Content-Type": "application/json"})
+headers = {"Content-Type": "application/json"}
+key = os.environ.get("LOCAL_API_KEY") or os.environ.get("LLAMA_API_KEY")
+if key:
+    headers["Authorization"] = "Bearer " + key
+req = urllib.request.Request(base + "/completion", data=json.dumps(body).encode(), headers=headers)
 try:
     t = json.load(urllib.request.urlopen(req, timeout=1800))["timings"]
 except Exception as e:

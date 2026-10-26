@@ -133,6 +133,14 @@ is blocked, rather than that nothing was found, and the test reports it as SKIP
 rather than failure. Waiting a few minutes clears it. `LOCAL_SEARCH=0` disables
 the server entirely.
 
+## "the running server requires an API key"
+
+The server was started with `LOCAL_API_KEY` and this session has none (or a
+different one). Start the session with the same `LOCAL_API_KEY`, or
+`local-claude stop` and start without a key. The reverse — a key set for a
+server started without one — only prints a note: the server is unprotected until
+restarted.
+
 ## `/resume` does not list a session
 
 Local sessions keep their history in `~/.local-claude/claude`, apart from your

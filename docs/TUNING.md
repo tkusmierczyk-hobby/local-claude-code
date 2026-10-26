@@ -140,7 +140,9 @@ or a running server is reused unchanged.
 
 | Env | Default | What it does |
 |---|---|---|
-| `LOCAL_HOST` / `LOCAL_PORT` | `127.0.0.1` / `8080` | Where the server listens. Change the port if something else owns 8080 |
+| `LOCAL_HOST` / `LOCAL_PORT` | `127.0.0.1` / `8080` | Where the server listens. `127.0.0.1` means this machine only; see "From another computer" below. Change the port if something else owns 8080 |
+| `LOCAL_WEBUI` | 0 | `1` serves llama.cpp's own chat page at the server's address — a plain chat with the model, without Claude Code's tools. Server option |
+| `LOCAL_API_KEY` | none | Require this key on the server. Claude Code and the launcher's own requests send it; the server gets it through its environment, so `ps` does not show it. A session without the right key stops with a message. Server option |
 | `LOCAL_BATCH` | the larger of 2048 and the micro-batch | Logical batch size. llama.cpp caps `--ubatch-size` to it, so it must not be smaller |
 | `CLAUDE_CODE_MAX_OUTPUT_TOKENS` | 32768 | Room for one reply. Too low truncates a long `Write` into invalid JSON — see [TROUBLESHOOTING](TROUBLESHOOTING.md) |
 | `API_TIMEOUT_MS` | 1800000 | 30 minutes. Must exceed the worst-case generation: 32k tokens at ~30 tok/s is ~18 minutes |
@@ -153,6 +155,22 @@ or a running server is reused unchanged.
 | `LOCAL_LLAMA_ARGS` | — | Extra flags passed straight to `llama-server` |
 | `LOCAL_CLAUDE_CONFIG_DIR` | `~/.local-claude/claude` | The separate folder `LOCAL_STORAGE=separate` and `none` use |
 | `LOCAL_CLAUDE_PREFIX` / `LOCAL_CLAUDE_STATE` / `MODELS_DIR` | see [INSTALL](INSTALL.md#what-goes-where) | Relocate the install, state or models |
+
+## From another computer
+
+The server listens on `127.0.0.1`, so only this machine can reach it. To use it
+from elsewhere — e.g. the chat page — prefer an SSH tunnel: the server stays
+local-only, and the connection is encrypted and needs your SSH login.
+
+```bash
+LOCAL_WEBUI=1 local-claude start                  # on this machine (stop first if a server runs)
+ssh -N -L 8080:127.0.0.1:8080 you@this-machine    # on the other computer; keep it open
+# then browse to http://127.0.0.1:8080 on the other computer
+```
+
+Listening on the network directly (`LOCAL_HOST=0.0.0.0`) also works, but the
+traffic is unencrypted, so set `LOCAL_API_KEY` and enter the key in the chat
+page's settings.
 
 ## Sizing context
 
