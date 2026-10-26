@@ -23,6 +23,8 @@ is reported, rather than the query silently going elsewhere:
 Other knobs (all optional):
   DDG_MIN_INTERVAL   seconds between DuckDuckGo requests (default 5), counted
                      across every session on this machine
+  DDG_JITTER         random extra delay on top of that, 0 to this many seconds
+                     (default 3), so gaps are 5-8 s rather than a fixed beat
   DDG_COOLDOWN       first back-off after a bot check, seconds (default 300);
                      doubles on each further block, up to DDG_MAX_COOLDOWN
                      (default 1800), and resets after a successful search
@@ -38,6 +40,7 @@ import fcntl
 import ipaddress
 import json
 import os
+import random
 import re
 import socket
 import sys
@@ -150,6 +153,7 @@ class DuckDuckGo:
         self.session.headers.update({"User-Agent": UA,
                                      "Accept-Language": "en-US,en;q=0.9"})
         self.min_interval = _env_float("DDG_MIN_INTERVAL", 5.0)
+        self.jitter = max(0.0, _env_float("DDG_JITTER", 3.0))
         self.base_cooldown = _env_float("DDG_COOLDOWN", 300.0)
         self.max_cooldown = _env_float("DDG_MAX_COOLDOWN", 1800.0)
         self.own_state = {}  # stands in for the shared file when it can't be opened
@@ -187,7 +191,9 @@ class DuckDuckGo:
             if 0 < left <= self.max_cooldown:  # bounded: a clock set back can't stall search
                 raise SearchBlocked(_ddg_refusing(left))
             # One gate for every request: bursts are what trigger the bot check.
-            time.sleep(min(self.min_interval, max(0.0, st.get("last", 0) + self.min_interval - now)))
+            # A fresh random gap each turn, so the requests don't land on a fixed beat.
+            gap = self.min_interval + random.uniform(0.0, self.jitter)
+            time.sleep(min(gap, max(0.0, st.get("last", 0) + gap - now)))
             st["last"] = time.time()
 
     def _record(self, r):
