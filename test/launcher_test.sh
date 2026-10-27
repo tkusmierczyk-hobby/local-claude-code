@@ -155,5 +155,28 @@ cmp -s "$P/.claude/verify.sh" <(printf '#!/bin/sh\ntest -f ok\n')
 check "attempts: verify.sh is left as it was" $?
 stop_server
 
+# ---- chat template -------------------------------------------------------------
+# arg_after FLAG — the value the stand-in server got for FLAG
+arg_after() { grep -A1 -x -- "$1" "$ROOT/llama/last-args" | tail -1; }
+MODEL="$ROOT/models/Test-A3B.gguf"
+touch -d 2000-01-01 "$MODEL"
+
+echo "my own template" > "$ROOT/mine.jinja"; touch -d 1999-01-01 "$ROOT/mine.jinja"
+LOCAL_TEMPLATE="$ROOT/mine.jinja" "$HERE/local-claude" start >/dev/null 2>&1
+[ "$(cat "$ROOT/mine.jinja")" = "my own template" ] && [ "$(arg_after --chat-template-file)" = "$ROOT/mine.jinja" ]
+check "template: LOCAL_TEMPLATE=<path> is used as it is, even when older than the model" $?
+stop_server
+LOCAL_TEMPLATE="$ROOT/missing.jinja" "$HERE/local-claude" start >/dev/null 2>&1
+[ $? -ne 0 ] && [ ! -e "$ROOT/missing.jinja" ]
+check "template: a LOCAL_TEMPLATE that does not exist stops the start" $?
+stop_server
+
+TPL="$ROOT/state/templates/Test-A3B.jinja"; mkdir -p "$(dirname "$TPL")"
+echo stale > "$TPL"; touch -d 2001-01-01 "$TPL"   # newer than the model, older than the patch
+"$HERE/local-claude" start >/dev/null 2>&1
+grep -q "merge all system messages" "$TPL" && [ "$(arg_after --chat-template-file)" = "$TPL" ]
+check "template: the cached copy is rebuilt when make-template.sh is newer" $?
+stop_server
+
 echo "launcher: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

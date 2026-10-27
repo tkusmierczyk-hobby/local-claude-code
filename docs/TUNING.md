@@ -132,7 +132,7 @@ or a running server is reused unchanged.
 | `LOCAL_MMPROJ` | auto-detected | Vision projector; see MODELS.md |
 | `LOCAL_MMPROJ_DEVICE` | `cpu` | `gpu` offloads the vision tower, costing ~1 GB of VRAM the experts want |
 | `LOCAL_DEVICE` | autodetected | Force a GPU; never the integrated one |
-| `LOCAL_TEMPLATE` | auto-patched | `0` uses the model's stock chat template — see DESIGN-NOTES |
+| `LOCAL_TEMPLATE` | auto-patched | `0` uses the model's stock chat template; a path uses that file as it is, never regenerated — see DESIGN-NOTES |
 | `LOCAL_SEARCH` | 1 | `0` drops the web-search MCP server, leaving no web access at all: Claude Code's own web tools are off by default |
 | `SEARCH_BACKENDS` | `ddg,searxng,brave` | Search engines to try, in order. DuckDuckGo needs no key, but refuses for a while after a burst of searches; SearXNG needs `SEARXNG_URL`; Brave's Search API needs a key in `~/.local-claude/brave-search.key` and is paid per search beyond a monthly credit. An engine that is not set up is skipped, unless you name it here; one that refuses for now hands over to the next; a rejected key stops the search with a message instead. The key lives in a file rather than a variable so that other programs started from your shell cannot read it. Per session |
 | `DDG_MIN_INTERVAL` | 5 | Seconds between searches sent to DuckDuckGo, counted across every session on the machine (they share the IP address it limits). Per session |

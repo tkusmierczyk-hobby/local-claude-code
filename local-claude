@@ -382,10 +382,17 @@ start_llama() {
   # Claude Code sends its environment block as a *trailing* system message, and
   # Qwen's stock template raises "System message must be at the beginning." on
   # that — every request 500s. Serve a patched copy of the model's own template
-  # that merges system messages instead. LOCAL_TEMPLATE=0 uses the embedded one.
-  if [[ "${LOCAL_TEMPLATE:-}" != "0" ]]; then
-    local tpl="${LOCAL_TEMPLATE:-$STATE_DIR/templates/$(basename "$model" .gguf).jinja}"
-    if [[ ! -s "$tpl" || "$model" -nt "$tpl" ]]; then
+  # that merges system messages instead. LOCAL_TEMPLATE=0 uses the embedded one;
+  # LOCAL_TEMPLATE=<path> uses yours exactly as it is, never regenerated.
+  if [[ "${LOCAL_TEMPLATE:-}" == "0" ]]; then
+    :
+  elif [[ -n "${LOCAL_TEMPLATE:-}" ]]; then
+    [[ -s "$LOCAL_TEMPLATE" ]] || { echo "[local-claude] LOCAL_TEMPLATE not found: $LOCAL_TEMPLATE" >&2; return 1; }
+    args+=(--chat-template-file "$LOCAL_TEMPLATE")
+  else
+    local tpl="$STATE_DIR/templates/$(basename "$model" .gguf).jinja"
+    # Rebuilt when the model or the patch itself is newer than the cached copy.
+    if [[ ! -s "$tpl" || "$model" -nt "$tpl" || "$HERE/bin/make-template.sh" -nt "$tpl" ]]; then
       "$HERE/bin/make-template.sh" "$model" "$tpl" >/dev/null 2>&1 \
         || echo "[local-claude] no embedded chat template to patch; using the model's own" >&2
     fi
