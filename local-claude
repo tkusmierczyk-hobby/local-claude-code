@@ -607,8 +607,11 @@ if [[ "${1:-}" == "status" ]]; then
     echo "search:   ${backend} (${engines#, then })"
     if [[ ! -s "$BRAVE_KEY_FILE" ]]; then echo "          (for a fallback when DuckDuckGo refuses, put a Brave Search API key in $BRAVE_KEY_FILE)"; fi
   fi
-  nvidia-smi --query-gpu=name,memory.used,memory.total --format=csv,noheader 2>/dev/null | sed 's/^/gpu:      /'
-  free -g | awk '/^Mem:/ {printf "ram:      %d GB used / %d GB total\n", $3, $2}'
+  # `|| true`: without nvidia-smi (AMD, Intel, macOS) the failing pipeline
+  # would end `status` here under pipefail.
+  nvidia-smi --query-gpu=name,memory.used,memory.total --format=csv,noheader 2>/dev/null | sed 's/^/gpu:      /' || true
+  # LC_ALL=C: free names its rows in the user's language ("Pamięć:", not "Mem:").
+  LC_ALL=C free -g | awk '/^Mem:/ {printf "ram:      %d GB used / %d GB total\n", $3, $2}'
   exit 0
 fi
 

@@ -46,7 +46,7 @@ sleep 3
   echo "# local-claude tuning report"
   echo "# generated $(date -Is)"
   echo "# model: $(basename "$MODEL")"
-  echo "# host:  $(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null | head -1), $(nproc) threads, $(free -g | awk '/^Mem:/{print $2}') GB RAM"
+  echo "# host:  $(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null | head -1), $(nproc) threads, $(LC_ALL=C free -g | awk '/^Mem:/{print $2}') GB RAM"
   echo
   "$HERE/test/bench.sh" --model "$MODEL" --tune
 } | tee -a "$REPORT"

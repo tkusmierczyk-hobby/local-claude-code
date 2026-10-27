@@ -198,4 +198,4 @@ if [[ "$TUNE" == "1" && -n "$best_n" ]]; then
   "$HERE/local-claude" stop >/dev/null 2>&1
   echo "the launcher uses them from the next start"
 fi
-free -g | awk '/^Mem:/ {printf "ram: %d GB used / %d GB total\n", $3, $2}'
+LC_ALL=C free -g | awk '/^Mem:/ {printf "ram: %d GB used / %d GB total\n", $3, $2}'

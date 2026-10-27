@@ -285,5 +285,12 @@ kill -0 "$other" 2>/dev/null
 check "stop: a recorded PID that is no longer a llama-server is left alone" $?
 kill "$other" 2>/dev/null; wait "$other" 2>/dev/null; stop_server
 
+# ---- locale --------------------------------------------------------------------
+# `free` labels its rows in the user's language ("Pamięć:" in Polish).
+"$HERE/local-claude" status >/dev/null 2>&1   # the stand-in nvidia-smi fails, as on a machine without one
+check "status: completes on a machine without nvidia-smi" $?
+LC_ALL=pl_PL.UTF-8 "$HERE/local-claude" status 2>/dev/null | grep -q '^ram: '
+check "locale: status reports RAM whatever the language" $?
+
 echo "launcher: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
