@@ -151,6 +151,10 @@ def main():
         return
 
     dst = sys.argv[2]
+    # Opening the output truncates it, so writing over the input would empty
+    # the model before a byte of it was copied.
+    if os.path.exists(dst) and os.path.samefile(src, dst):
+        sys.exit(f"{dst} is the input file; write the patched copy to another path")
     edits = {}
     args = sys.argv[3:]
     i = 0

@@ -11,6 +11,7 @@
 ./test/fetch_model_test.sh   # the downloader against a local stand-in, offline
 ./test/launcher_test.sh      # the launcher with a stand-in server and claude, offline
 ./test/install_test.sh       # install.sh against stand-in releases, offline
+./test/patch_gguf_test.py    # GGUF patching on a tiny file, offline
 bash -n local-claude install.sh bin/*.sh test/*.sh
 ```
 
