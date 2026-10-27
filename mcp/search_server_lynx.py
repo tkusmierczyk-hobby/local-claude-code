@@ -212,6 +212,15 @@ def _parse_ddg_dump(text: str, k: int = MAX_RESULTS) -> list:
 
 # ---- DuckDuckGo via lynx -----------------------------------------------------
 
+# Models retell these to the user, and a vaguer version came out as a claim that
+# the user's configuration blocked search, so say what it is and what it is not.
+def _ddg_refusing(seconds: float) -> str:
+    return ("DuckDuckGo is refusing automated searches from this machine for now (its rate "
+            "limit after a burst of searches; not a configuration problem). No search is "
+            f"sent to it for {max(1, round(seconds / 60))} min, because searching during "
+            "the block prolongs it.")
+
+
 class DuckDuckGoLynx:
     URL = "https://lite.duckduckgo.com/lite/?q={q}"
     # Lynx renders text, so the bot check is recognised by its wording; its
@@ -253,11 +262,7 @@ class DuckDuckGoLynx:
             now = time.time()
             left = st.get("until", 0) - now
             if 0 < left <= self.max_cooldown:
-                raise SearchBlocked(
-                    "DuckDuckGo is refusing automated searches from this machine "
-                    f"for now. No search is sent to it for {max(1, round(left / 60))} min, "
-                    "because searching during the block prolongs it."
-                )
+                raise SearchBlocked(_ddg_refusing(left))
             gap = self.min_interval + random.uniform(0.0, self.jitter)
             time.sleep(min(gap, max(0.0, st.get("last", 0) + gap - now)))
             st["last"] = time.time()
@@ -283,10 +288,7 @@ class DuckDuckGoLynx:
         if blocked:
             log(f"duckduckgo served its bot check; pausing for {cool:.0f}s "
                 f"(block #{st['strikes']} in a row)")
-            raise SearchBlocked(
-                "DuckDuckGo is refusing automated searches from this machine "
-                f"for now. No search is sent to it for {max(1, round(cool / 60))} min."
-            )
+            raise SearchBlocked(_ddg_refusing(cool))
 
     def search(self, query: str, k: int = MAX_RESULTS):
         self._turn()
@@ -346,7 +348,8 @@ def brave_search(query: str, k: int = MAX_RESULTS):
             err_body = {}
         if code in (401, 403) or err_body.get("error", {}).get("code") == "SUBSCRIPTION_TOKEN_INVALID":
             raise SearchSetupError(f"Brave Search rejected the API key in {_brave_key_file()} "
-                                   f"(HTTP {code}). This is a configuration problem.")
+                                   f"(HTTP {code}). This is a configuration problem: "
+                                   "tell the user.")
         raise SearchUnavailable(f"Brave Search answered HTTP {code}.")
     except Exception as e:
         raise SearchUnavailable(f"Brave Search failed: {e}")
@@ -365,7 +368,8 @@ def searxng_search(query: str, k: int = MAX_RESULTS):
     except urllib.error.HTTPError as e:
         if e.code == 403:
             raise SearchSetupError("SearXNG refused format=json; add `json` under "
-                                   "search.formats in its settings.yml.")
+                                   "search.formats in its settings.yml. This is a "
+                                   "configuration problem: tell the user.")
         raise SearchUnavailable(f"SearXNG answered HTTP {e.code}.")
     except Exception as e:
         raise SearchUnavailable(f"SearXNG failed: {e}")
@@ -429,14 +433,15 @@ def run_search(query: str):
         try:
             if name not in BACKENDS:
                 raise SearchSetupError(f"SEARCH_BACKENDS names '{name}', which is not a search "
-                                       "backend (use ddg, searxng or brave).")
+                                       "backend (use ddg, searxng or brave). This is a "
+                                       "configuration problem: tell the user.")
             label, lacks, fn = BACKENDS[name]
             missing = lacks()
             if missing and not chosen:
                 continue
             if missing:
                 raise SearchSetupError(f"SEARCH_BACKENDS names {label}, which needs {missing}. "
-                                       "This is a configuration problem.")
+                                       "This is a configuration problem: tell the user.")
             res = fn(query, MAX_RESULTS)
         except SearchSetupError as e:
             log(f"backend {name} set up wrongly")
@@ -484,7 +489,8 @@ def _check_public(url: str):
         ip = ipaddress.ip_address(info[4][0].split("%")[0])
         if not ip.is_global:
             raise ValueError(f"refusing to fetch {host}: it resolves to a non-public "
-                             f"address ({ip}). Set WEB_FETCH_ALLOW_PRIVATE=1.")
+                             f"address ({ip}). Set WEB_FETCH_ALLOW_PRIVATE=1 to allow "
+                             "local and private URLs.")
 
 def _probe(url: str):
     """One request, redirects unfollowed: (HTTP status or 0, lower-cased headers)."""
