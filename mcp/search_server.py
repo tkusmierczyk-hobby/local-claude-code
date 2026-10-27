@@ -53,11 +53,11 @@ import requests
 from bs4 import BeautifulSoup
 
 UAS = [
-    # Lynx first — text-mode browsers rarely trigger bot checks; keep using
-    # whichever UA works instead of rotating every request.
-    "Lynx/2.8.5 dev liberational HTML browser",
+    # The standard UA first: it is the default, kept instead of rotating
+    # every request.
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/125.0 Safari/537.36",
+    "Lynx/2.8.5 dev liberational HTML browser",
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/124.0 Safari/537.36",
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
