@@ -496,6 +496,14 @@ start_llama() {
     kill -0 "$(cat "$PID_FILE")" 2>/dev/null || break
     sleep 1
   done
+  # Out of time while it is still loading: stop it, rather than report a failure
+  # and leave it running for the next start to collide with.
+  if kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+    echo "[local-claude] llama-server was not ready after ${LOCAL_START_TIMEOUT:-600}s, so it was stopped." \
+         "A first load from a slow disk can take longer: raise LOCAL_START_TIMEOUT." >&2
+    stop_llama >/dev/null || true
+    return 1
+  fi
   # A tuned micro-batch above 2048 only fits next to the tuned split with the
   # GPU otherwise empty. If another program holds VRAM today, or LOCAL_NCMOE was
   # lowered, start at 2048 — slower prefill — rather than not at all. An

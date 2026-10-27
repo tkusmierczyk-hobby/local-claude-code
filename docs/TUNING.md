@@ -161,7 +161,7 @@ or a running server is reused unchanged.
 | `LOCAL_BATCH` | the larger of 2048 and the micro-batch | Logical batch size. llama.cpp caps `--ubatch-size` to it, so it must not be smaller |
 | `CLAUDE_CODE_MAX_OUTPUT_TOKENS` | 32768 | Room for one reply. Too low truncates a long `Write` into invalid JSON — see [TROUBLESHOOTING](TROUBLESHOOTING.md) |
 | `API_TIMEOUT_MS` | 1800000 | 30 minutes. Must exceed the worst-case generation: 32k tokens at ~30 tok/s is ~18 minutes |
-| `LOCAL_START_TIMEOUT` | 600 | Seconds to wait for the server to come up; a 22 GB model reads from disk on first load |
+| `LOCAL_START_TIMEOUT` | 600 | Seconds to wait for the server to come up; a 22 GB model reads from disk on first load. A server not ready by then is stopped |
 | `LOCAL_STOP_TIMEOUT` | 60 | Half-seconds to wait for it to exit before `SIGKILL`. It must release its VRAM before the next one starts |
 | `LOCAL_NCMOE_FALLBACK` | model's layer count | Expert split used before `bench --tune` has measured anything |
 | `LOCAL_VRAM_MARGIN` | 768 | MiB of VRAM `bench --tune` requires free after its test request; raise it if the server still dies mid-session |

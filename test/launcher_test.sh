@@ -34,8 +34,10 @@ unset LOCAL_MODEL_FILE LOCAL_NCMOE LOCAL_UBATCH LOCAL_TEMPLATE LOCAL_DEVICE LOCA
 for tool in pgrep pkill; do
   cat > "$ROOT/bin/$tool" <<EOF
 #!/usr/bin/env bash
-# $tool, blind to every process not started from the test's scratch folder
+# $tool, blind to every process not started from the test's scratch folder,
+# itself included (its own command line holds the pattern)
 pids=""; for pid in \$("\$REAL_PGREP" "\$@"); do
+  [ "\$pid" = "\$\$" ] && continue
   grep -qF "\$ROOT" "/proc/\$pid/cmdline" 2>/dev/null && pids="\$pids \$pid"
 done
 [ -n "\$pids" ] || exit 1
@@ -68,8 +70,10 @@ port=""; ctx=0; prev=""
 for a in "$@"; do
   [ "$prev" = --port ] && port="$a"; [ "$prev" = --ctx-size ] && ctx="$a"; prev="$a"
 done
-python3 "$D/server.py" "$port" "$ctx" & child=$!
 trap 'kill $child 2>/dev/null; exit 0' TERM INT
+# FAKE_SLOW_START=N: take N seconds to load, as a large model does from disk
+if [ -n "${FAKE_SLOW_START:-}" ]; then sleep "$FAKE_SLOW_START" & child=$!; wait "$child"; fi
+python3 "$D/server.py" "$port" "$ctx" & child=$!
 wait "$child"
 EOF
 cat > "$ROOT/llama/server.py" <<'EOF'
@@ -325,6 +329,15 @@ check "auto-tune: tunes, and keeps its report and log in LOCAL_CLAUDE_STATE" $?
 curl -sf "http://127.0.0.1:$LOCAL_PORT/health" >/dev/null && [ ! -e "$ROOT/claude-args" ]
 check "auto-tune: leaves the server running without starting a Claude Code session" $?
 stop_server; rm -f "$S"/ncmoe* "$S"/ubatch*
+
+# ---- start timeout -------------------------------------------------------------
+out="$(LOCAL_START_TIMEOUT=2 FAKE_SLOW_START=30 "$HERE/local-claude" start 2>&1)"; rc=$?
+sleep 0.5
+[ "$rc" != 0 ] && echo "$out" | grep -q "not ready after 2s" && ! pgrep -f "llama-server --model" >/dev/null
+check "start: a server not ready in time is stopped, not left loading" $? || echo "$out" | tail -3 | sed 's/^/          /'
+"$HERE/local-claude" start >/dev/null 2>&1 && curl -sf "http://127.0.0.1:$LOCAL_PORT/health" >/dev/null
+check "start: the next start then works" $?
+stop_server
 
 echo "launcher: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
