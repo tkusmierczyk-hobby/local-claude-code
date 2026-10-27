@@ -204,5 +204,34 @@ row="$("$HERE/local-claude" bench 2>/dev/null | grep -E '^[0-9]' | head -1)"
 check "bench: without --tune it measures the split the launcher runs" $? || echo "          got: $row"
 stop_server; rm -f "$S"/ncmoe* "$S"/ubatch*
 
+# ---- search backend ------------------------------------------------------------
+# The config install.sh writes, with the requests-based server.
+cat > "$S/search-mcp.json" <<EOF
+{"mcpServers": {"search": {"command": "$(command -v python3)", "args": ["$HERE/mcp/search_server.py"],
+ "env": {"SEARCH_MCP_LOG": "$S/search-mcp.log"}}}}
+EOF
+printf '#!/bin/sh\nexit 0\n' > "$ROOT/bin/lynx"; chmod +x "$ROOT/bin/lynx"
+# session_search [env...] — the search server script a session gets
+session_search() {
+  rm -f "$ROOT/claude-args"
+  env "$@" LOCAL_SEARCH=1 "$HERE/local-claude" -p hi </dev/null >/dev/null 2>&1
+  local cfg; cfg="$(grep -A1 -x -- --mcp-config "$ROOT/claude-args" 2>/dev/null | tail -1)"
+  [ -n "$cfg" ] && python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["mcpServers"]["search"]["args"][0])' "$cfg"
+}
+[[ "$(session_search)" == */search_server.py ]]
+check "search: without LOCAL_SEARCH_BACKEND, the installed server" $?
+[[ "$(session_search LOCAL_SEARCH_BACKEND=lynx)" == */search_server_lynx.py ]]
+check "search: LOCAL_SEARCH_BACKEND=lynx switches this session to the lynx server" $?
+[[ "$(LOCAL_SEARCH=1 LOCAL_SEARCH_BACKEND=lynx "$HERE/local-claude" status 2>/dev/null | grep '^search:')" == "search:   lynx "* ]] \
+  && [[ "$(LOCAL_SEARCH=1 "$HERE/local-claude" status 2>/dev/null | grep '^search:')" == "search:   requests "* ]]
+sed "s|search_server.py|search_server_lynx.py|" "$S/search-mcp.json" > "$ROOT/lynx-mcp.json"
+[[ "$(LOCAL_SEARCH=1 LOCAL_SEARCH_CONFIG="$ROOT/lynx-mcp.json" "$HERE/local-claude" status 2>/dev/null | grep '^search:')" == "search:   lynx "* ]]
+check "search: status names the backend sessions will get" $?
+stop_server
+LOCAL_SEARCH=1 LOCAL_SEARCH_BACKEND=links "$HERE/local-claude" -p hi </dev/null >/dev/null 2>&1
+[ $? -ne 0 ] && [ ! -e "$S/llama.pid" ]
+check "search: an unknown LOCAL_SEARCH_BACKEND fails before the model loads" $?
+stop_server
+
 echo "launcher: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

@@ -42,7 +42,8 @@
 #   LOCAL_CLAUDE_MD=~/x.md             your instructions for local sessions
 #                                      (default: ~/.local-claude/CLAUDE.md, if present)
 #   LOCAL_SEARCH=0                     disable the local web-search MCP server
-#   LOCAL_SEARCH_BACKEND=requests|lynx search implementation (default: requests)
+#   LOCAL_SEARCH_BACKEND=requests|lynx search server for this session (default: the
+#                                      one install.sh set up, requests unless told lynx)
 #   SEARCH_BACKENDS=ddg,brave          search engines to try, in order (default: ddg,searxng,brave,
 #                                      skipping searxng without SEARXNG_URL and brave without
 #                                      an API key in ~/.local-claude/brave-search.key)
@@ -86,6 +87,22 @@ AUTH=(); [[ -n "$API_KEY" ]] && AUTH=(-H "Authorization: Bearer $API_KEY")
 # which every program started from the shell, cloud sessions included, could read.
 BRAVE_KEY_FILE="$STATE_DIR/brave-search.key"
 mkdir -p "$STATE_DIR"
+
+# The search server's MCP config, written by install.sh for the server chosen
+# then. LOCAL_SEARCH_BACKEND (requests or lynx) picks one for this session.
+SEARCH_MCP="${LOCAL_SEARCH_CONFIG:-$STATE_DIR/search-mcp.json}"
+search_script() {
+  case "$1" in
+    requests) echo "$HERE/mcp/search_server.py" ;;
+    lynx)     echo "$HERE/mcp/search_server_lynx.py" ;;
+    *)        return 1 ;;
+  esac
+}
+search_backend() {
+  if [[ -n "${LOCAL_SEARCH_BACKEND:-}" ]]; then echo "$LOCAL_SEARCH_BACKEND"
+  elif grep -q 'search_server_lynx\.py' "$SEARCH_MCP" 2>/dev/null; then echo lynx
+  else echo requests; fi
+}
 
 # install.sh writes hardware-derived defaults here. They are loaded as HWENV_*,
 # not under their own names: exported as LOCAL_*, they would look exactly like a
@@ -554,8 +571,9 @@ if [[ "${1:-}" == "status" ]]; then
   echo "claude.md: $([[ -s "$md" ]] && echo "$md ($(wc -l < "$md") lines)" || echo "none (write one at $md)");" \
        "$([[ "${LOCAL_GLOBAL_CLAUDE_MD:-0}" == 1 ]] && echo "~/.claude/CLAUDE.md also loaded" || echo "~/.claude/CLAUDE.md skipped")"
   if [[ "${LOCAL_SEARCH:-1}" == "0" ]]; then echo "search:   off"
+  elif [[ ! -f "$SEARCH_MCP" ]]; then echo "search:   off (no $SEARCH_MCP: run ./install.sh)"
   else
-    backend="${LOCAL_SEARCH_BACKEND:-requests}"
+    backend="$(search_backend)"
     engines="" backends="${SEARCH_BACKENDS:-ddg,searxng,brave}"
     for b in ${backends//,/ }; do
       b="${b,,}"
@@ -628,6 +646,12 @@ if [[ "${LOCAL_SEARCH:-1}" != "0" ]]; then
       *) echo "[local-claude] SEARCH_BACKENDS takes ddg, searxng and brave (got: $b)" >&2; exit 1 ;;
     esac
   done
+  case "${LOCAL_SEARCH_BACKEND:-requests}" in
+    requests) ;;
+    lynx) command -v "${LYNX_BIN:-lynx}" >/dev/null 2>&1 \
+            || { echo "[local-claude] LOCAL_SEARCH_BACKEND=lynx needs lynx on PATH (or LYNX_BIN)" >&2; exit 1; } ;;
+    *) echo "[local-claude] LOCAL_SEARCH_BACKEND takes requests or lynx (got: $LOCAL_SEARCH_BACKEND)" >&2; exit 1 ;;
+  esac
 fi
 
 # ---- Bring the backend up ----------------------------------------------------
@@ -780,9 +804,22 @@ EXTRA_ARGS=()
 # built-in WebSearch/WebFetch are switched off below (WebFetch can be switched
 # back on with LOCAL_BUILTIN_WEBFETCH=1). Claude Code hands its environment to
 # the server, which is how SEARCH_BACKENDS and the key's path reach it.
-SEARCH_MCP="${LOCAL_SEARCH_CONFIG:-$STATE_DIR/search-mcp.json}"
 if [[ "${LOCAL_SEARCH:-1}" != "0" ]] && [[ -f "$SEARCH_MCP" ]]; then
   export SEARCH_BRAVE_KEY_FILE="$BRAVE_KEY_FILE"
+  if [[ -n "${LOCAL_SEARCH_BACKEND:-}" ]]; then
+    # This session's choice: the installed config, pointed at that server.
+    session_mcp="$STATE_DIR/search-mcp.$LOCAL_SEARCH_BACKEND.json"
+    python3 - "$SEARCH_MCP" "$(search_script "$LOCAL_SEARCH_BACKEND")" "$session_mcp" <<'PY'
+import json, sys
+src, script, out = sys.argv[1:]
+with open(src) as fh:
+    cfg = json.load(fh)
+cfg["mcpServers"]["search"]["args"] = [script]
+with open(out, "w") as fh:
+    json.dump(cfg, fh, indent=2)
+PY
+    SEARCH_MCP="$session_mcp"
+  fi
   EXTRA_ARGS+=(--mcp-config "$SEARCH_MCP")
   [[ -n "$LOCAL_RULES" ]] && LOCAL_RULES="$LOCAL_RULES
 8. You have web_search and web_fetch tools (from the \"search\" MCP server). Use web_search when you need current information, library docs, or facts not in the codebase, then web_fetch a result URL to read it. Do not claim you cannot access the internet."

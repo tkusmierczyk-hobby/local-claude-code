@@ -166,6 +166,7 @@ or a running server is reused unchanged.
 | `LOCAL_NCMOE_FALLBACK` | model's layer count | Expert split used before `bench --tune` has measured anything |
 | `LOCAL_VRAM_MARGIN` | 768 | MiB of VRAM `bench --tune` requires free after its test request; raise it if the server still dies mid-session |
 | `LOCAL_SEARCH_LOG_QUERIES` | 0 | `1` makes the search server write queries and URLs to `~/.local-claude/search-mcp.log`; by default it records only which tool ran |
+| `LOCAL_SEARCH_BACKEND` | what `install.sh` set up | Per session: `lynx` searches and fetches through the `lynx` text browser (`mcp/search_server_lynx.py`), `requests` through Python (`mcp/search_server.py`). Set when running `install.sh`, it also chooses the default |
 | `LOCAL_SEARCH_CONFIG` | `~/.local-claude/search-mcp.json` | Path to the MCP config `install.sh` generates |
 | `LOCAL_LLAMA_ARGS` | — | Extra flags passed straight to `llama-server` |
 | `LOCAL_CLAUDE_CONFIG_DIR` | `~/.local-claude/claude` | The separate folder `LOCAL_STORAGE=separate` and `none` use |
