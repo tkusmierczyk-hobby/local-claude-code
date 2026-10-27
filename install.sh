@@ -37,6 +37,16 @@ info() { printf '  %s\n' "$*"; }
 die()  { printf '\n\033[31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 sha256_of() { { sha256sum "$1" 2>/dev/null || shasum -a 256 "$1"; } | cut -d' ' -f1; }
 
+# The search server sessions get by default: "requests" (search_server.py,
+# needs requests+bs4) or "lynx" (search_server_lynx.py, needs lynx on PATH).
+# Checked here, before anything is installed.
+SEARCH_BACKEND="${LOCAL_SEARCH_BACKEND:-requests}"
+case "$SEARCH_BACKEND" in
+  requests) MCP_SCRIPT="$HERE/mcp/search_server.py" ;;
+  lynx)     MCP_SCRIPT="$HERE/mcp/search_server_lynx.py" ;;
+  *)        die "unknown LOCAL_SEARCH_BACKEND=$SEARCH_BACKEND (use requests or lynx)" ;;
+esac
+
 # fetch URL FILE SIZE SHA256 — a download that survives a slow, flaky link. It
 # resumes into FILE.part and renames only once size and checksum match, so an
 # interrupted run neither leaves a truncated file that looks complete nor starts
@@ -96,6 +106,10 @@ case "$HW_OS/$HW_ARCH/$HW_BACKEND" in
   macos/x64/*)       ASSET="bin-macos-x64" ;;
   *) die "no prebuilt llama.cpp for $HW_OS/$HW_ARCH/$HW_BACKEND — build from source and set LLAMA_DIR" ;;
 esac
+# Builds are installed by tag. The CPU-only download gets a -cpu suffix where
+# a GPU one exists for the same tag: sharing a folder, asking for the other
+# backend found the first one "already installed" and kept it.
+SUFFIX=""; [ "$ASSET" = bin-ubuntu-x64 ] && SUFFIX="-cpu"
 
 # Careful: llama.cpp publishes version tags (v0.4.x) that carry *no* binaries
 # alongside build tags (bNNNNN) that do, and /releases/latest returns the former.
@@ -116,7 +130,7 @@ fi
 if [ -n "$CURRENT" ] && [ -z "$BUILD$BACKEND_OVERRIDE" ] && [ "$UPDATE" = 0 ]; then
   KEEP=1; BUILD="$CURRENT"
   info "build     $CURRENT (in use; ./install.sh --update moves to the newest release)"
-elif [ -n "$BUILD" ] && [ -x "$PREFIX/$BUILD/llama-server" ]; then
+elif [ -n "$BUILD" ] && [ -x "$PREFIX/$BUILD$SUFFIX/llama-server" ]; then
   info "build     $BUILD (already installed)"
 else
   if [ -n "$BUILD" ]; then
@@ -150,7 +164,7 @@ fi
 
 # ---- 3. install it -----------------------------------------------------------
 say "3/6  Installing llama.cpp (user-space, no root)"
-DEST="$PREFIX/$BUILD"
+DEST="$PREFIX/$BUILD$SUFFIX"
 if [ "$KEEP" = 1 ]; then
   DEST="$(readlink -f "$PREFIX/current")"
   info "keeping $DEST"
@@ -176,7 +190,7 @@ fi
 if [ "$KEEP" = 0 ]; then
   ln -sfn "$DEST" "$PREFIX/current"
   info "current -> $DEST"
-  if [ -n "$CURRENT" ] && [ "$CURRENT" != "$BUILD" ]; then
+  if [ -n "$CURRENT" ] && [ "$CURRENT" != "$(basename "$DEST")" ]; then
     info "note: switched from $CURRENT. Its tuning does not carry over: run"
     info "      local-claude bench --tune. To go back: ln -sfn $PREFIX/$CURRENT $PREFIX/current"
   fi
@@ -194,14 +208,6 @@ info "models    $MODELS_DIR"
 # The MCP config must name absolute paths, and the right python for *this*
 # machine, so it is generated here rather than shipped.
 PY="$(command -v python3)"
-# Choose the search backend: "requests" (search_server.py, needs requests+bs4)
-# or "lynx" (search_server_lynx.py, needs lynx on PATH).  Default: requests.
-SEARCH_BACKEND="${LOCAL_SEARCH_BACKEND:-requests}"
-case "$SEARCH_BACKEND" in
-  requests) MCP_SCRIPT="$HERE/mcp/search_server.py" ;;
-  lynx)     MCP_SCRIPT="$HERE/mcp/search_server_lynx.py" ;;
-  *)        error "unknown LOCAL_SEARCH_BACKEND=$SEARCH_BACKEND (use requests or lynx)"; exit 1 ;;
-esac
 cat > "$STATE_DIR/search-mcp.json" <<JSON
 {
   "mcpServers": {
