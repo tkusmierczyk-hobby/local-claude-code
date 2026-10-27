@@ -53,6 +53,9 @@ import requests
 from bs4 import BeautifulSoup
 
 UAS = [
+    # Lynx first — text-mode browsers rarely trigger bot checks; keep using
+    # whichever UA works instead of rotating every request.
+    "Lynx/2.8.5 dev liberational HTML browser",
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/125.0 Safari/537.36",
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
@@ -61,9 +64,32 @@ UAS = [
     "(KHTML, like Gecko) Chrome/123.0 Safari/537.36",
 ]
 
+_cached_ua: str | None = None
 
-def _ua():
-    return random.choice(UAS)
+
+def _ua() -> str:
+    """Return the current User-Agent; stick with it until a block forces rotation."""
+    global _cached_ua
+    if _cached_ua is not None:
+        return _cached_ua
+    # Pick the first available UA; on block we advance to the next one.
+    _cached_ua = UAS[0]
+    return _cached_ua
+
+
+def _rotate_ua() -> str:
+    """Try the next UA in the list; cache whichever we land on."""
+    global _cached_ua
+    if _cached_ua is None:
+        return _ua()
+    try:
+        idx = UAS.index(_cached_ua) + 1
+    except ValueError:
+        idx = 0
+    if idx >= len(UAS):
+        return _cached_ua
+    _cached_ua = UAS[idx]
+    return _cached_ua
 
 
 MAX_RESULTS = 10  # backends always fetch this many; the cache serves any k <= 10
@@ -210,6 +236,8 @@ class DuckDuckGo:
     def _record(self, r):
         """A bot check starts a pause, longer each time it is still there; a result ends that."""
         blocked = self._is_blocked(r)
+        if blocked:
+            log(f"UA {_ua()!r} blocked by DuckDuckGo; trying {_rotate_ua()!r}")
         with self._state() as st:
             if blocked:
                 st["strikes"] = min(st.get("strikes", 0) + 1, 16)
@@ -235,8 +263,6 @@ class DuckDuckGo:
 
     def search(self, query: str, k: int = MAX_RESULTS):
         self._turn()
-        # Rotate User-Agent per-request so the session doesn't fingerprint the same one.
-        self.session.headers["User-Agent"] = _ua()
         # POST, as the lite page's own search form does. One request per search:
         # each one counts against the limit.
         r = self.session.post(self.URL, data={"q": query}, timeout=20)
