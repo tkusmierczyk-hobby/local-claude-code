@@ -263,5 +263,27 @@ echo "$ours" > "$S/ollama.pid"
 check "stop: only the ollama the launcher started is stopped, not one of yours" $?
 kill "$ours" "$yours" 2>/dev/null; wait "$ours" "$yours" 2>/dev/null
 
+# Two servers, as with a test server beside the main one.
+free_port() { python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])'; }
+A="$LOCAL_PORT"; B="$(free_port)"
+up() { curl -sf "http://127.0.0.1:$1/health" >/dev/null; }
+LOCAL_PORT=$A "$HERE/local-claude" start >/dev/null 2>&1
+LOCAL_PORT=$B "$HERE/local-claude" start >/dev/null 2>&1
+LOCAL_PORT=$A "$HERE/local-claude" stop >/dev/null 2>&1
+! up "$A" && up "$B"
+check "stop: stops the server on its own port, not the one started last" $?
+LOCAL_PORT=$A "$HERE/local-claude" start >/dev/null 2>&1
+rm -f "$S"/llama*.pid   # e.g. state from before an upgrade
+LOCAL_PORT=$B "$HERE/local-claude" stop >/dev/null 2>&1
+up "$A" && ! up "$B"
+check "stop: without a PID file, only the server on that port" $?
+LOCAL_PORT=$A "$HERE/local-claude" stop >/dev/null 2>&1
+bash -c 'while :; do sleep 1; done' & other=$!
+for f in llama.pid "llama.$A.pid" "llama.$B.pid"; do echo "$other" > "$S/$f"; done
+LOCAL_PORT=$B "$HERE/local-claude" stop >/dev/null 2>&1; sleep 0.3
+kill -0 "$other" 2>/dev/null
+check "stop: a recorded PID that is no longer a llama-server is left alone" $?
+kill "$other" 2>/dev/null; wait "$other" 2>/dev/null; stop_server
+
 echo "launcher: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
