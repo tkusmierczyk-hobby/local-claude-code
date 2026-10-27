@@ -8,9 +8,9 @@
 ./test/e2e_agentic_test.sh   # the real loop; slower, but it catches what the others miss
 ./test/mcp_server_test.py
 ./test/mcp_lynx_test.py      # the lynx search server, offline
-./test/fetch_model_test.sh  # the downloader against a local stand-in, offline
-./test/launcher_test.sh     # the launcher with a stand-in server and claude, offline
-./test/install_test.sh      # install.sh against stand-in releases, offline
+./test/fetch_model_test.sh   # the downloader against a local stand-in, offline
+./test/launcher_test.sh      # the launcher with a stand-in server and claude, offline
+./test/install_test.sh       # install.sh against stand-in releases, offline
 bash -n local-claude install.sh bin/*.sh test/*.sh
 ```
 
