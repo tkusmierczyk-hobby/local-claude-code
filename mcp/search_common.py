@@ -295,6 +295,9 @@ def _check_public(url: str):
 def dispatch_tool(name: str, args: dict, search, fetch) -> str:
     """Run a tool: search(query) is the server's engine chain, fetch(url, max_chars) its web_fetch."""
     logpath = os.environ.get("SEARCH_MCP_LOG")
+    # LOCAL_STORAGE=none keeps no log, unless LOCAL_SEARCH_LOG_QUERIES=1 asks for one.
+    if os.environ.get("LOCAL_STORAGE") == "none" and os.environ.get("LOCAL_SEARCH_LOG_QUERIES") != "1":
+        logpath = None
     if logpath:
         try:
             with open(logpath, "a") as fh:

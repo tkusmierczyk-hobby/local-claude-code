@@ -135,6 +135,34 @@ def call(mod, tool, **args):
     return r["isError"], r["content"][0]["text"]
 
 
+LOG = os.path.join(STATE, "search-mcp.log")
+
+
+def logged(mod, **env):
+    """Whether a search, in this environment, leaves a line in the search log."""
+    behave.clear()
+    if os.path.exists(LOG):
+        os.remove(LOG)
+    saved = {k: os.environ.get(k) for k in ("SEARCH_MCP_LOG", "LOCAL_STORAGE", "LOCAL_SEARCH_LOG_QUERIES")}
+    os.environ.update(SEARCH_MCP_LOG=LOG, **env)
+    try:
+        call(mod, "web_search", query="q")
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+    return os.path.exists(LOG) and os.path.getsize(LOG) > 0
+
+
+same("log: the search log records which tool ran", {n: logged(m) for n, m in SERVERS.items()},
+     lambda r: r)
+same("log: under LOCAL_STORAGE=none there is no search log",
+     {n: logged(m, LOCAL_STORAGE="none") for n, m in SERVERS.items()}, lambda r: not r)
+same("log: ...unless LOCAL_SEARCH_LOG_QUERIES=1 asks for one",
+     {n: logged(m, LOCAL_STORAGE="none", LOCAL_SEARCH_LOG_QUERIES="1") for n, m in SERVERS.items()},
+     lambda r: r)
 same("output: an empty query is an error", {n: call(m, "web_search", query="  ") for n, m in SERVERS.items()},
      lambda r: r[0])
 same("output: an unknown tool is an error", {n: call(m, "no_such_tool") for n, m in SERVERS.items()},

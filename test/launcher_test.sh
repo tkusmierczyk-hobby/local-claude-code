@@ -66,10 +66,17 @@ case "${1:-}" in
   --version) echo "version: 0 (stand-in)"; exit 0 ;;
 esac
 printf '%s\n' "$@" > "$D/last-args"
-port=""; ctx=0; prev=""
+port=""; ctx=0; ub=0; prev=""
 for a in "$@"; do
-  [ "$prev" = --port ] && port="$a"; [ "$prev" = --ctx-size ] && ctx="$a"; prev="$a"
+  [ "$prev" = --port ] && port="$a"; [ "$prev" = --ctx-size ] && ctx="$a"
+  [ "$prev" = --ubatch-size ] && ub="$a"; prev="$a"
 done
+# FAKE_MAX_UBATCH=N: fail as a start that runs out of VRAM does, above that micro-batch
+if [ -n "${FAKE_MAX_UBATCH:-}" ] && [ "$ub" -gt "$FAKE_MAX_UBATCH" ]; then
+  echo "ggml_backend_cuda_buffer_type_alloc_buffer: allocating 1200 MiB on device 0: cudaMalloc failed: out of memory" >&2
+  echo "llama_init_from_model: failed to allocate compute buffers" >&2
+  exit 1
+fi
 trap 'kill $child 2>/dev/null; exit 0' TERM INT
 # FAKE_SLOW_START=N: take N seconds to load, as a large model does from disk
 if [ -n "${FAKE_SLOW_START:-}" ]; then sleep "$FAKE_SLOW_START" & child=$!; wait "$child"; fi
@@ -338,6 +345,29 @@ check "start: a server not ready in time is stopped, not left loading" $? || ech
 "$HERE/local-claude" start >/dev/null 2>&1 && curl -sf "http://127.0.0.1:$LOCAL_PORT/health" >/dev/null
 check "start: the next start then works" $?
 stop_server
+
+# ---- the server log under LOCAL_STORAGE=none -------------------------------------
+# (The search log is the search server's own rule: test/mcp_parity_test.py.)
+logs() { ls "$S"/llama-server*.log 2>/dev/null | wc -l; }
+rm -f "$S"/llama-server*.log
+"$HERE/local-claude" start >/dev/null 2>&1; [ "$(logs)" = 1 ]
+check "storage: the server keeps a log by default" $?
+stop_server; rm -f "$S"/llama-server*.log
+LOCAL_STORAGE=none "$HERE/local-claude" start >/dev/null 2>&1 && up "$LOCAL_PORT" && [ "$(logs)" = 0 ]
+check "storage: a server started under LOCAL_STORAGE=none keeps none" $?
+stop_server
+LOCAL_STORAGE=none LOCAL_SERVER_LOG=1 "$HERE/local-claude" start >/dev/null 2>&1; [ "$(logs)" = 1 ]
+check "storage: LOCAL_SERVER_LOG=1 keeps it anyway" $?
+stop_server; rm -f "$S"/llama-server*.log
+echo 4096 > "$S/ubatch.llama"   # a tuned micro-batch that no longer fits
+for mode in separate none; do
+  out="$(FAKE_MAX_UBATCH=2048 LOCAL_STORAGE=$mode "$HERE/local-claude" start 2>&1)"
+  echo "$out" | grep -q "retrying at 2048" && up "$LOCAL_PORT" && [ "$(arg_after --ubatch-size)" = 2048 ]
+  check "storage: the out-of-VRAM retry at 2048 works with LOCAL_STORAGE=$mode" $? || echo "$out" | tail -3 | sed 's/^/          /'
+  [ "$mode" = none ] && { [ "$(logs)" = 0 ]; check "storage: ...and leaves no log behind" $?; }
+  stop_server; rm -f "$S"/llama-server*.log
+done
+rm -f "$S/ubatch.llama"
 
 echo "launcher: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

@@ -51,6 +51,8 @@
 #   LOCAL_BUILTIN_WEBSEARCH=1          also allow its WebSearch (off: cannot work locally)
 #   LOCAL_STORAGE=separate             where sessions keep history and memory:
 #                                      separate (~/.local-claude/claude), none, shared (~/.claude)
+#   LOCAL_SERVER_LOG=0|1               keep llama-server's log (at server start; default 1,
+#                                      0 under LOCAL_STORAGE=none)
 #   LOCAL_BACKGROUND_TRAFFIC=1 / LOCAL_FEEDBACK=1 / LOCAL_REMOTE=1
 #                                      allow background traffic / feedback reports /
 #                                      mirroring, remote control, cross-session messages
@@ -95,6 +97,11 @@ PORT_TAG=""; [[ "$LOCAL_PORT" != 8080 ]] && PORT_TAG=".$LOCAL_PORT"
 PID_FILE="$STATE_DIR/llama$PORT_TAG.pid"
 MODEL_STATE="$STATE_DIR/model$PORT_TAG"
 SERVER_LOG="$STATE_DIR/llama-server$PORT_TAG.log"
+# Whether a server started now keeps its log: LOCAL_SERVER_LOG, by default not
+# under LOCAL_STORAGE=none. It takes effect when the server starts.
+keep_server_log() {
+  [[ "${LOCAL_SERVER_LOG:-$([[ "${LOCAL_STORAGE:-separate}" == none ]] && echo 0 || echo 1)}" != 0 ]]
+}
 
 # The search server's MCP config, written by install.sh for the server chosen
 # then. LOCAL_SEARCH_BACKEND (requests or lynx) picks one for this session.
@@ -482,17 +489,22 @@ start_llama() {
   [[ -n "${LOCAL_LLAMA_ARGS:-}" ]] && args+=(${LOCAL_LLAMA_ARGS})
 
   echo "[local-claude] starting llama-server: $(basename "$model") ctx=$ctx (${slots} slots, shared) ncmoe=$ncmoe ubatch=$ubatch threads=$THREADS${PIN_CPUS:+ pinned to CPUs $PIN_CPUS} dev=${dev:-auto}${VISION_NOTE:-}" >&2
-  local log_lines
-  log_lines="$(wc -l 2>/dev/null < "$SERVER_LOG" || echo 0)"
+  # Without a log to keep, the server still writes one, which startup needs: why
+  # a start failed, and whether to retry at a smaller micro-batch. It goes to a
+  # temporary file, deleted once the server is up or has failed; the running
+  # server keeps writing into the deleted file, which is gone when it stops.
+  local log="$SERVER_LOG" log_lines
+  keep_server_log || log="$(mktemp "$STATE_DIR/llama-server.XXXXXX.log")"
+  log_lines="$(wc -l 2>/dev/null < "$log" || echo 0)"
   # No key: make sure an empty LLAMA_API_KEY cannot reach the server either.
   local keyenv=(-u LLAMA_API_KEY); [[ -n "$API_KEY" ]] && keyenv=(LLAMA_API_KEY="$API_KEY")
   env "${keyenv[@]}" LD_LIBRARY_PATH="$LLAMA_DIR" nohup "$LLAMA_DIR/llama-server" "${args[@]}" \
-    >>"$SERVER_LOG" 2>&1 &
+    >>"$log" 2>&1 &
   echo $! > "$PID_FILE"
   echo "$model" > "$MODEL_STATE"
   # A 22 GB model reads from disk on first load; be patient before giving up.
   for _ in $(seq 1 "${LOCAL_START_TIMEOUT:-600}"); do
-    llama_up && return 0
+    llama_up && { keep_server_log || rm -f "$log"; return 0; }
     kill -0 "$(cat "$PID_FILE")" 2>/dev/null || break
     sleep 1
   done
@@ -502,6 +514,7 @@ start_llama() {
     echo "[local-claude] llama-server was not ready after ${LOCAL_START_TIMEOUT:-600}s, so it was stopped." \
          "A first load from a slow disk can take longer: raise LOCAL_START_TIMEOUT." >&2
     stop_llama >/dev/null || true
+    keep_server_log || rm -f "$log"
     return 1
   fi
   # A tuned micro-batch above 2048 only fits next to the tuned split with the
@@ -509,14 +522,16 @@ start_llama() {
   # lowered, start at 2048 — slower prefill — rather than not at all. An
   # explicit LOCAL_UBATCH is a choice, and fails loudly instead.
   if [[ -z "${2:-}" && -z "${LOCAL_UBATCH:-}" && "$ubatch" -gt 2048 ]] \
-     && tail -n +"$(( log_lines + 1 ))" "$SERVER_LOG" \
+     && tail -n +"$(( log_lines + 1 ))" "$log" \
         | grep -qiE 'failed to allocate|out of memory'; then
+    keep_server_log || rm -f "$log"
     echo "[local-claude] --ubatch-size $ubatch did not fit in VRAM; retrying at 2048" >&2
     start_llama "$model" 2048
     return
   fi
-  echo "[local-claude] llama-server failed to start; last lines of $SERVER_LOG:" >&2
-  tail -15 "$SERVER_LOG" >&2
+  echo "[local-claude] llama-server failed to start; last lines of its log$(keep_server_log && echo " ($SERVER_LOG)"):" >&2
+  tail -15 "$log" >&2
+  keep_server_log || rm -f "$log"
   return 1
 }
 
