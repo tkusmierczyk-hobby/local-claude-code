@@ -9,6 +9,7 @@ import os
 import shutil
 import sys
 import tempfile
+import time
 
 if not shutil.which("lynx"):
     print("SKIP: lynx is not installed")
@@ -94,6 +95,18 @@ serve("bot_check")
 err, text = call("web_search", query="python")
 check("DuckDuckGo's bot check is recognised from its wording",
       err and "refusing automated searches" in text)
+st = pacing()
+check("the bot check starts a pause shared with other sessions",
+      st.get("strikes") == 1 and 290 < st.get("until", 0) - time.time() <= 300)
+n = len(served)
+err, text = call("web_search", query="python again")
+check("nothing is sent to DuckDuckGo during the pause", err and len(served) == n)
+
+with open(os.path.join(STATE, "ddg-pacing.json"), "w") as fh:
+    json.dump(dict(pacing(), until=0), fh)  # the pause is over
+serve("results")
+err, text = call("web_search", query="anomaly detection")
+check("results after the pause end the doubling", not err and pacing().get("strikes") == 0)
 
 shutil.rmtree(STATE)
 print(f"\n{'ALL PASSED' if fails == 0 else str(fails) + ' FAILED'}")

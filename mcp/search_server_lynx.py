@@ -263,14 +263,17 @@ class DuckDuckGoLynx:
                 st["strikes"] = min(st.get("strikes", 0) + 1, 16)
                 cool = min(self.base_cooldown * 2 ** (st["strikes"] - 1), self.max_cooldown)
                 st["until"] = time.time() + cool
-                log(f"duckduckgo served its bot check; pausing for {cool:.0f}s "
-                    f"(block #{st['strikes']} in a row)")
-                raise SearchBlocked(
-                    "DuckDuckGo is refusing automated searches from this machine "
-                    f"for now. No search is sent to it for {max(1, round(cool / 60))} min."
-                )
-            if results:
+            elif results:
                 st["strikes"] = 0
+        # Raised only once the state is written back: raised inside the `with`,
+        # it skipped the write, so the pause was never recorded.
+        if blocked:
+            log(f"duckduckgo served its bot check; pausing for {cool:.0f}s "
+                f"(block #{st['strikes']} in a row)")
+            raise SearchBlocked(
+                "DuckDuckGo is refusing automated searches from this machine "
+                f"for now. No search is sent to it for {max(1, round(cool / 60))} min."
+            )
 
     def search(self, query: str, k: int = MAX_RESULTS):
         self._turn()
