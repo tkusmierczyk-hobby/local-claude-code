@@ -6,6 +6,7 @@
 ./test/preflight.sh          # install sanity, no model needed
 ./test/api_compat_test.sh    # the contract with Claude Code — run after any launcher change
 ./test/e2e_agentic_test.sh   # the real loop; slower, but it catches what the others miss
+./test/storage_test.sh       # what a real session leaves on disk, per LOCAL_STORAGE
 ./test/mcp_server_test.py
 ./test/mcp_lynx_test.py      # the lynx search server, offline
 ./test/mcp_parity_test.py    # both search servers behave the same where they share code

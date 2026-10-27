@@ -146,7 +146,8 @@ nothing.
 **What leaves your machine:** each search goes to the engine that answers it,
 and each fetched page comes from its site. Nothing goes to Anthropic. The
 server's log records which tool ran, not the query or the URL
-(`LOCAL_SEARCH_LOG_QUERIES=1` logs those too).
+(`LOCAL_SEARCH_LOG_QUERIES=1` logs those too), and with `LOCAL_STORAGE=none` there
+is no such log.
 
 ### Search engines
 
@@ -224,6 +225,7 @@ Every search option is in [docs/TUNING.md](docs/TUNING.md); fixes are in
 ./test/e2e_agentic_test.sh   # the real agentic loop in a sandbox
 ./test/mcp_server_test.py    # MCP handshake for the web-search server
 ./test/mcp_parity_test.py    # both web-search servers behave the same
+./test/storage_test.sh       # what a session leaves on disk, per LOCAL_STORAGE
 ./test/bench.sh --tune       # throughput + expert-split sweep
 ```
 
@@ -241,7 +243,7 @@ model. The stack compensates automatically rather than hoping:
 | No background traffic to Anthropic, no feedback reports, no mirroring to claude.ai, remote control or messages from other sessions | `LOCAL_BACKGROUND_TRAFFIC=1`, `LOCAL_FEEDBACK=1`, `LOCAL_REMOTE=1`. Any Claude Code variable or `--settings` key you set yourself also wins over these defaults |
 | Your global `~/.claude/CLAUDE.md` is skipped: it is written for the cloud model and costs context | `LOCAL_GLOBAL_CLAUDE_MD=1` to load it anyway |
 | Instructions of your own for every local session, written for the local model | `~/.local-claude/CLAUDE.md`, if you create it |
-| Local sessions keep their history and memory in a folder of their own, `~/.local-claude/claude`, never in `~/.claude`, where cloud sessions would pick them up | `LOCAL_STORAGE=none` keeps nothing; `LOCAL_STORAGE=shared` uses `~/.claude` |
+| Local sessions keep their history and memory in a folder of their own, `~/.local-claude/claude`, never in `~/.claude`, where cloud sessions would pick them up | `LOCAL_STORAGE=none` keeps no transcript, history or memory, and no search or server log; a few housekeeping files remain, with nothing of the conversation in them ([details](docs/TUNING.md#everything-else)). `LOCAL_STORAGE=shared` uses `~/.claude` |
 | Best-of-N attempts gated on your acceptance test | `local-claude attempts 3 "..."` |
 
 ## Documentation

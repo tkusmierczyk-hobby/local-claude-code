@@ -18,7 +18,8 @@ neighbour, such as an idle PyTorch process, is enough to push out a tuned 4096
 micro-batch; the launcher then prints `retrying at 2048` and starts anyway, with
 slower prefill.
 
-**It started, then died mid-session.** If `~/.local-claude/llama-server.log` ends
+**It started, then died mid-session.** (A server started under `LOCAL_STORAGE=none` keeps
+no log: start it with `LOCAL_SERVER_LOG=1` to see one.) If `~/.local-claude/llama-server.log` ends
 with `CUDA error: out of memory` (often in `cudaGraphInstantiate`), the split left
 too little VRAM for what the server allocates while running. Re-run
 `local-claude bench --tune`, which keeps a reserve (`LOCAL_VRAM_MARGIN`, 768 MiB);
@@ -163,7 +164,8 @@ restarted.
 
 Local sessions keep their history in `~/.local-claude/claude`, apart from your
 normal Claude Code sessions, so each kind only lists its own. Sessions from before
-the separation stay in `~/.claude`. With `LOCAL_STORAGE=none` nothing is kept.
+the separation stay in `~/.claude`. With `LOCAL_STORAGE=none` no session is kept, so there
+is none to resume.
 
 ## The first local session asks for a theme and whether to trust the folder
 
@@ -188,7 +190,8 @@ From the most convenient to the most raw:
    grep 'Parsed message' ~/.local-claude/llama-server.log      # each finished reply: text, thinking, tool calls
    ```
 
-   This writes every prompt to the log. Empty it when you are done:
+   With `LOCAL_STORAGE=none` set, add `LOCAL_SERVER_LOG=1` to the start, or there is no
+   log to read. This writes every prompt to the log. Empty it when you are done:
    `: > ~/.local-claude/llama-server.log`.
 4. **The raw text, as the model sees it:** render a conversation through the
    chat template, then send that text and read the output before any parsing —
