@@ -304,9 +304,14 @@ detect_device() {
   # to whichever build you switch to second.
   local cache="$STATE_DIR/device.$(build_id)"
   [[ -s "$cache" ]] && { cat "$cache"; return; }
+  # NVIDIA first, then discrete AMD and Intel cards, then Apple. A bare "Arc"
+  # is not enough: Intel's integrated GPUs are called "Arc(TM) Graphics" or
+  # "Arc(TM) 140V" too; its discrete cards have a model number like A770.
+  # (test/preflight.sh ranks devices the same way.)
   local dev
   dev="$(LD_LIBRARY_PATH="$LLAMA_DIR" "$LLAMA_DIR/llama-server" --list-devices 2>/dev/null \
-        | awk -F: '/NVIDIA|Radeon RX|Arc|Apple/ {gsub(/ /,"",$1); print $1; exit}')"
+        | awk -F: '{ s = 0 } /NVIDIA/ { s = 3 } /Radeon RX|Arc\([Tt][Mm]\) [AB][0-9][0-9][0-9]/ { s = 2 }
+                   /Apple/ { s = 1 } s > best { best = s; d = $1 } END { gsub(/ /, "", d); print d }')"
   [[ -n "$dev" ]] && echo "$dev" > "$cache"
   echo "$dev"
 }

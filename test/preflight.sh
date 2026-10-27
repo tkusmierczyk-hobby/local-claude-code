@@ -43,7 +43,9 @@ if [ -x "$LLAMA_DIR/llama-server" ]; then
   devs="$(LD_LIBRARY_PATH="$LLAMA_DIR" "$LLAMA_DIR/llama-server" --list-devices 2>/dev/null | grep -E '^\s+[A-Za-z]+[0-9]+:' || true)"
   if [ -n "$devs" ]; then
     echo "$devs" | sed 's/^/        /'
-    disc="$(echo "$devs" | awk -F: '/NVIDIA|Radeon RX|Arc|Apple/ {gsub(/ /,"",$1); print $1; exit}')"
+    # ranked as the launcher's detect_device does
+    disc="$(echo "$devs" | awk -F: '{ s = 0 } /NVIDIA/ { s = 3 } /Radeon RX|Arc\([Tt][Mm]\) [AB][0-9][0-9][0-9]/ { s = 2 }
+                                    /Apple/ { s = 1 } s > best { best = s; d = $1 } END { gsub(/ /, "", d); print d }')"
     if [ -n "$disc" ]; then
       ok "discrete GPU selected: $disc"
     else

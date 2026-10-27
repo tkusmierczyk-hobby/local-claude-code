@@ -233,5 +233,25 @@ LOCAL_SEARCH=1 LOCAL_SEARCH_BACKEND=links "$HERE/local-claude" -p hi </dev/null 
 check "search: an unknown LOCAL_SEARCH_BACKEND fails before the model loads" $?
 stop_server
 
+# ---- GPU choice ----------------------------------------------------------------
+# device_for <--list-devices lines>... — the device the launcher picks
+device_for() {
+  { echo "Available devices:"; printf '  %s\n' "$@"; } > "$ROOT/llama/devices.txt"
+  rm -f "$S"/device.*
+  "$HERE/local-claude" status 2>/dev/null | sed -n 's/^device: *//p'
+}
+[ "$(device_for "Vulkan0: Intel(R) Graphics (RPL-S) (23443 MiB, 20052 MiB free)" \
+                "Vulkan1: NVIDIA GeForce RTX 4060 Laptop GPU (8188 MiB, 460 MiB free)")" = Vulkan1 ]
+check "gpu: the NVIDIA card, not the integrated GPU listed first (reference machine)" $?
+[ "$(device_for "Vulkan0: Intel(R) Arc(TM) Graphics (MTL) (18000 MiB, 17000 MiB free)" \
+                "Vulkan1: NVIDIA GeForce RTX 4070 Laptop GPU (8188 MiB, 8000 MiB free)")" = Vulkan1 ]
+check "gpu: an integrated Intel Arc listed first is passed over" $?
+[ "$(device_for "Vulkan0: Intel(R) UHD Graphics 770 (16000 MiB, 15000 MiB free)" \
+                "Vulkan1: Intel(R) Arc(TM) A770 Graphics (16384 MiB, 16000 MiB free)")" = Vulkan1 ]
+check "gpu: a discrete Intel Arc is chosen" $?
+[ -z "$(device_for "Vulkan0: Intel(R) Arc(TM) 140V GPU (16GB) (18000 MiB, 17000 MiB free)")" ]
+check "gpu: an integrated GPU alone is left to llama.cpp" $?
+rm -f "$ROOT/llama/devices.txt" "$S"/device.*
+
 echo "launcher: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
