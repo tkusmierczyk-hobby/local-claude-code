@@ -201,6 +201,7 @@ plain API calls in both.
   check, none for 5 minutes, doubling while the check persists, up to 30. All
   sessions on the machine share this. Meanwhile searches go to SearXNG or Brave
   if you set one up; otherwise web search is unavailable until the pause ends.
+  Alternatively, using lynx with **LOCAL_SEARCH_BACKEND=lynx local-claude** does not cause any problems with DuckDuckGo.
   Don't test it by searching again and again.
 - **The model may retell that as a configuration problem.** The tool says the
   bot check is *not* one; a configuration problem (a rejected Brave key, a
