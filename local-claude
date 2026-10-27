@@ -42,6 +42,7 @@
 #   LOCAL_CLAUDE_MD=~/x.md             your instructions for local sessions
 #                                      (default: ~/.local-claude/CLAUDE.md, if present)
 #   LOCAL_SEARCH=0                     disable the local web-search MCP server
+#   LOCAL_SEARCH_BACKEND=requests|lynx search implementation (default: requests)
 #   SEARCH_BACKENDS=ddg,brave          search engines to try, in order (default: ddg,searxng,brave,
 #                                      skipping searxng without SEARXNG_URL and brave without
 #                                      an API key in ~/.local-claude/brave-search.key)
@@ -539,6 +540,7 @@ if [[ "${1:-}" == "status" ]]; then
        "$([[ "${LOCAL_GLOBAL_CLAUDE_MD:-0}" == 1 ]] && echo "~/.claude/CLAUDE.md also loaded" || echo "~/.claude/CLAUDE.md skipped")"
   if [[ "${LOCAL_SEARCH:-1}" == "0" ]]; then echo "search:   off"
   else
+    backend="${LOCAL_SEARCH_BACKEND:-requests}"
     engines="" backends="${SEARCH_BACKENDS:-ddg,searxng,brave}"
     for b in ${backends//,/ }; do
       b="${b,,}"
@@ -547,7 +549,7 @@ if [[ "${1:-}" == "status" ]]; then
       elif [[ "$b" == brave && -s "$BRAVE_KEY_FILE" ]]; then engines+=", then Brave Search API (key in $BRAVE_KEY_FILE)"
       elif [[ -n "${SEARCH_BACKENDS:-}" ]]; then engines+=", then $b (not set up!)"; fi
     done
-    echo "search:   ${engines#, then }"
+    echo "search:   ${backend} (${engines#, then })"
     if [[ ! -s "$BRAVE_KEY_FILE" ]]; then echo "          (for a fallback when DuckDuckGo refuses, put a Brave Search API key in $BRAVE_KEY_FILE)"; fi
   fi
   nvidia-smi --query-gpu=name,memory.used,memory.total --format=csv,noheader 2>/dev/null | sed 's/^/gpu:      /'

@@ -194,12 +194,20 @@ info "models    $MODELS_DIR"
 # The MCP config must name absolute paths, and the right python for *this*
 # machine, so it is generated here rather than shipped.
 PY="$(command -v python3)"
+# Choose the search backend: "requests" (search_server.py, needs requests+bs4)
+# or "lynx" (search_server_lynx.py, needs lynx on PATH).  Default: requests.
+SEARCH_BACKEND="${LOCAL_SEARCH_BACKEND:-requests}"
+case "$SEARCH_BACKEND" in
+  requests) MCP_SCRIPT="$HERE/mcp/search_server.py" ;;
+  lynx)     MCP_SCRIPT="$HERE/mcp/search_server_lynx.py" ;;
+  *)        error "unknown LOCAL_SEARCH_BACKEND=$SEARCH_BACKEND (use requests or lynx)"; exit 1 ;;
+esac
 cat > "$STATE_DIR/search-mcp.json" <<JSON
 {
   "mcpServers": {
     "search": {
       "command": "$PY",
-      "args": ["$HERE/mcp/search_server.py"],
+      "args": ["$MCP_SCRIPT"],
       "env": {
         "SEARCH_MCP_LOG": "$STATE_DIR/search-mcp.log"
       }
@@ -208,9 +216,16 @@ cat > "$STATE_DIR/search-mcp.json" <<JSON
 }
 JSON
 info "mcp       $STATE_DIR/search-mcp.json"
-if ! "$PY" -c 'import requests, bs4' >/dev/null 2>&1; then
-  info "note: web search needs 'requests' and 'beautifulsoup4' — pip install them, or set LOCAL_SEARCH=0"
-fi
+case "$SEARCH_BACKEND" in
+  requests)
+    if ! "$PY" -c 'import requests, bs4' >/dev/null 2>&1; then
+      info "note: web search needs 'requests' and 'beautifulsoup4' — pip install them, or set LOCAL_SEARCH=0"
+    fi ;;
+  lynx)
+    if ! command -v lynx >/dev/null 2>&1; then
+      info "note: lynx search needs lynx on PATH — apt install lynx, or set LOCAL_SEARCH_BACKEND=requests"
+    fi ;;
+esac
 
 cat > "$STATE_DIR/hardware.env" <<ENVEOF
 # written by install.sh — the launcher reads these as defaults
