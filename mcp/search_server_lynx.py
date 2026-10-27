@@ -203,7 +203,10 @@ def _parse_ddg_dump(text: str, k: int = MAX_RESULTS) -> list:
         r["title"] = r["title"].strip()
         r["snippet"] = r["snippet"].strip()
 
-    return [r for r in results if r["url"]][:k]
+    # Real results are unwrapped from duckduckgo.com/l/?uddg=... by _tidy; ads
+    # click through duckduckgo.com/y.js, so a result still on DuckDuckGo is one.
+    return [r for r in results
+            if r["url"] and not (urlparse(r["url"]).hostname or "").endswith("duckduckgo.com")][:k]
 
 
 # ---- DuckDuckGo via lynx -----------------------------------------------------

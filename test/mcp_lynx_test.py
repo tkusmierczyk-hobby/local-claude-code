@@ -93,6 +93,8 @@ serve("results")
 err, text = call("web_search", query="anomaly detection")
 check("a results page about anomalies is not taken for a bot check",
       not err and "https://example.com/pyod" in text)
+check("a redirect-wrapped result gets its real URL", "https://en.example.org/wiki/Anomaly_detection" in text)
+check("sponsored results are dropped", "Buy anomaly tools" not in text and "y.js" not in text)
 
 serve("bot_check")
 err, text = call("web_search", query="python")
