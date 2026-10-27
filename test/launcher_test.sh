@@ -178,5 +178,25 @@ grep -q "merge all system messages" "$TPL" && [ "$(arg_after --chat-template-fil
 check "template: the cached copy is rebuilt when make-template.sh is newer" $?
 stop_server
 
+# ---- tuned split ---------------------------------------------------------------
+# The stand-in build is called "llama" (its folder's name).
+ncmoe_shown() { "$HERE/local-claude" status 2>/dev/null | sed -n 's/^n-cpu-moe: //p'; }
+S="$ROOT/state"
+echo 30 > "$S/ncmoe"; echo 20 > "$S/ncmoe.otherbuild"
+[[ "$(ncmoe_shown)" == "40 (default"* ]]
+check "tuning: another build's split is not used, shared file or not" $?
+rm "$S/ncmoe.otherbuild"
+[[ "$(ncmoe_shown)" == "30 (tuned)" ]]
+check "tuning: the shared file of an older install still counts until a build is tuned" $?
+echo 25 > "$S/ncmoe.llama"
+[[ "$(ncmoe_shown)" == "25 (tuned)" ]]
+check "tuning: this build's own split wins" $?
+rm -f "$S"/ncmoe*
+
+"$HERE/local-claude" bench --tune --sweep 40,38 --ubatch 2048 >/dev/null 2>&1
+[ -s "$S/ncmoe.llama" ] && [ -s "$S/ubatch.llama" ] && [ ! -e "$S/ncmoe" ]
+check "tuning: bench --tune stores the split for its build only" $?
+stop_server
+
 echo "launcher: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

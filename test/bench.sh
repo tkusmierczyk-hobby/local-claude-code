@@ -182,7 +182,6 @@ if [[ "$TUNE" == "1" && -n "$best_n" ]]; then
   build="$(basename "$(readlink -f "$LLAMA_DIR" 2>/dev/null || echo "$LLAMA_DIR")")"
   echo "$best_n" > "$STATE_DIR/ncmoe.$build"
   echo "$best_ub" > "$STATE_DIR/ubatch.$build"
-  echo "$best_n" > "$STATE_DIR/ncmoe"
   echo "tuned: --n-cpu-moe $best_n --ubatch-size $best_ub ($best_pp tok/s prefill, $best_tg tok/s decode)"
   echo "       -> $STATE_DIR/ncmoe.$build, $STATE_DIR/ubatch.$build"
   # A server left running would keep serving the last configuration tried.

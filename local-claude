@@ -304,9 +304,17 @@ ncmoe_cache() {
   echo "$STATE_DIR/ncmoe.$(build_id)"
 }
 
+# The tuned split for this build, or a failure. Before the per-build files there
+# was one shared `ncmoe`. It still counts until some build has been tuned, but
+# not after: then it is only a value measured under another build.
+tuned_ncmoe() {
+  if [[ -s "$(ncmoe_cache)" ]]; then cat "$(ncmoe_cache)"
+  elif [[ -s "$STATE_DIR/ncmoe" ]] && ! compgen -G "$STATE_DIR/ncmoe.*" >/dev/null; then cat "$STATE_DIR/ncmoe"
+  else return 1; fi
+}
+
 default_ncmoe() {
-  [[ -s "$(ncmoe_cache)" ]] && { cat "$(ncmoe_cache)"; return; }
-  [[ -s "$STATE_DIR/ncmoe" ]] && { cat "$STATE_DIR/ncmoe"; return; }   # pre-split layout
+  tuned_ncmoe && return
   # Until `bench --tune` has measured this machine, keep every expert in RAM:
   # that always starts, whatever the GPU. The model's own layer count is the
   # right "all of them" value, so read it rather than assuming one.
@@ -532,7 +540,7 @@ if [[ "${1:-}" == "status" ]]; then
     echo "server:   down"
     echo "model:    $(pick_model 2>/dev/null || echo 'none found — run: local-claude pull ...')"
   fi
-  echo "n-cpu-moe: ${LOCAL_NCMOE:-$(default_ncmoe "$(pick_model 2>/dev/null)")}$([[ -s "$(ncmoe_cache)" || -s "$STATE_DIR/ncmoe" ]] && echo ' (tuned)' || echo ' (default — run: local-claude bench --tune)')"
+  echo "n-cpu-moe: ${LOCAL_NCMOE:-$(default_ncmoe "$(pick_model 2>/dev/null)")}$(tuned_ncmoe >/dev/null && echo ' (tuned)' || echo ' (default — run: local-claude bench --tune)')"
   echo "device:   ${LOCAL_DEVICE:-$(detect_device)}"
   echo "ubatch:   ${LOCAL_UBATCH:-$(default_ubatch)}$([[ -s "$(ubatch_cache)" ]] && echo ' (tuned)')"
   pick_threads
