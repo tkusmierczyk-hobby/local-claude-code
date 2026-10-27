@@ -41,7 +41,9 @@ import socket
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.parse
+import urllib.request
 from collections import OrderedDict
 from contextlib import contextmanager
 from urllib.parse import parse_qs, unquote, urljoin, urlparse
@@ -310,7 +312,6 @@ def _brave_key() -> str:
         return ""
 
 def brave_search(query: str, k: int = MAX_RESULTS):
-    import urllib.request
     key = _brave_key()
     url = ("https://api.search.brave.com/res/v1/web/search"
            f"?q={urllib.parse.quote_plus(query)}&count={min(k, 20)}")

@@ -108,6 +108,14 @@ serve("results")
 err, text = call("web_search", query="anomaly detection")
 check("results after the pause end the doubling", not err and pacing().get("strikes") == 0)
 
+# A SearXNG that cannot be reached falls through to the next backend.
+L.BACKENDS["brave"] = ("Brave Search", lambda: None,
+                       lambda q, k: [{"title": "B", "url": "https://example.com/b", "snippet": ""}])
+os.environ.update(SEARCH_BACKENDS="searxng,brave", SEARXNG_URL="http://127.0.0.1:9")
+err, text = call("web_search", query="python")
+check("an unreachable SearXNG falls back to the next backend", not err and "(via brave)" in text)
+os.environ.update(SEARCH_BACKENDS="ddg")
+
 shutil.rmtree(STATE)
 print(f"\n{'ALL PASSED' if fails == 0 else str(fails) + ' FAILED'}")
 sys.exit(1 if fails else 0)
