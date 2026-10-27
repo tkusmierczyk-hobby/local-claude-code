@@ -2,7 +2,9 @@
 """Minimal MCP stdio server giving the local agent web search + fetch.
 
 No third-party MCP SDK: speaks JSON-RPC 2.0 over newline-delimited stdio
-(the MCP stdio transport) directly. Only deps are requests + bs4.
+(the MCP stdio transport) directly. Only deps are requests + bs4. The
+protocol, the engine chain and the messages are shared with
+search_server_lynx.py through search_common.py.
 
 Search backends are tried in order (SEARCH_BACKENDS, default
 "ddg,searxng,brave"). One that isn't set up is skipped, unless SEARCH_BACKENDS
@@ -37,20 +39,21 @@ Other knobs (all optional):
 Protocol channel is stdout — all logging goes to stderr.
 """
 import fcntl
-import ipaddress
 import json
 import os
 import random
 import re
-import socket
-import sys
 import time
-from collections import OrderedDict
 from contextlib import contextmanager
 from urllib.parse import parse_qs, unquote, urljoin, urlparse
 
 import requests
 from bs4 import BeautifulSoup
+
+import search_common as common
+from search_common import (MAX_RESULTS, TEXT_TYPES, SearchBlocked, SearchSetupError, SearchUnavailable,
+                           _brave_key, _brave_key_file, _check_public, _ddg_refusing, _env_float,
+                           _state_dir, log)
 
 UAS = [
     # The standard UA first: it is the default, kept instead of rotating
@@ -92,54 +95,9 @@ def _rotate_ua() -> str:
     return _cached_ua
 
 
-MAX_RESULTS = 10  # backends always fetch this many; the cache serves any k <= 10
-
-
-def log(*a):
-    print("[search-mcp]", *a, file=sys.stderr, flush=True)
-
-
-def send(msg):
-    sys.stdout.write(json.dumps(msg) + "\n")
-    sys.stdout.flush()
-
-
-def _env_float(name: str, default: float) -> float:
-    try:
-        return float(os.environ.get(name, default))
-    except ValueError:
-        return default
-
-
 def _strip_tags(s: str) -> str:
     # Brave/SearXNG snippets can carry <strong> highlighting.
     return BeautifulSoup(s or "", "html.parser").get_text(" ", strip=True)
-
-
-def _state_dir() -> str:
-    return os.environ.get("LOCAL_CLAUDE_STATE") or os.path.expanduser("~/.local-claude")
-
-
-class SearchUnavailable(Exception):
-    """A backend could not answer for now: blocked, rate-limited or down.
-    Messages never include the query, since they are logged."""
-
-
-class SearchBlocked(SearchUnavailable):
-    """DuckDuckGo answered with its bot check instead of results."""
-
-
-class SearchSetupError(Exception):
-    """A backend is set up wrongly: the user has to fix something."""
-
-
-# Models retell these to the user, and a vaguer version came out as a claim that
-# the user's configuration blocked search, so say what it is and what it is not.
-def _ddg_refusing(seconds: float) -> str:
-    return ("DuckDuckGo is refusing automated searches from this machine for now (its rate "
-            "limit after a burst of searches; not a configuration problem). No search is "
-            f"sent to it for {max(1, round(seconds / 60))} min, because searching during "
-            "the block prolongs it.")
 
 
 # ---- DuckDuckGo (keyless, best effort) --------------------------------------
@@ -281,20 +239,6 @@ DDG = DuckDuckGo()
 
 # ---- keyed / self-hosted backends -------------------------------------------
 
-def _brave_key_file() -> str:
-    return os.environ.get("SEARCH_BRAVE_KEY_FILE") or os.path.join(_state_dir(), "brave-search.key")
-
-
-def _brave_key() -> str:
-    # A file rather than an environment variable, which every program started
-    # from the shell, cloud sessions included, could read. Read per search, so
-    # a new key works without restarting the session.
-    try:
-        with open(_brave_key_file()) as fh:
-            return fh.read().strip()
-    except OSError:
-        return ""
-
 
 def brave_search(query: str, k: int = MAX_RESULTS):
     r = requests.get(
@@ -356,124 +300,7 @@ BACKENDS = {
 }
 
 
-def _order():
-    """The backends to try, in order, and whether the user named them (SEARCH_BACKENDS)."""
-    chosen = os.environ.get("SEARCH_BACKENDS", "").strip()
-    return [b.strip().lower() for b in (chosen or "ddg,searxng,brave").split(",") if b.strip()], bool(chosen)
-
-
-# ---- cache + backend chain --------------------------------------------------
-
-_cache: "OrderedDict[str, tuple]" = OrderedDict()
-_CACHE_MAX = 256
-
-
-def _cache_key(query: str) -> str:
-    return " ".join(query.split()).lower()
-
-
-def _cache_get(key):
-    ttl = _env_float("SEARCH_CACHE_TTL", 900.0)
-    hit = _cache.get(key)
-    if hit and time.monotonic() - hit[0] < ttl:
-        _cache.move_to_end(key)
-        return hit[1]
-    _cache.pop(key, None)
-    return None
-
-
-def _cache_put(key, value):
-    if _env_float("SEARCH_CACHE_TTL", 900.0) <= 0:
-        return
-    _cache[key] = (time.monotonic(), value)
-    _cache.move_to_end(key)
-    while len(_cache) > _CACHE_MAX:
-        _cache.popitem(last=False)
-
-
-def run_search(query: str):
-    """Return (backend_name, results).
-
-    Raises SearchUnavailable if every backend failed for now, and SearchSetupError
-    as soon as one is set up wrongly: the user should hear of a broken key rather
-    than have the query silently go elsewhere.
-    """
-    key = _cache_key(query)
-    cached = _cache_get(key)
-    if cached is not None:
-        return cached
-
-    order, chosen = _order()
-    errors, empty_from = [], None
-    for name in order:
-        try:
-            if name not in BACKENDS:
-                raise SearchSetupError(f"SEARCH_BACKENDS names '{name}', which is not a search "
-                                       "backend (use ddg, searxng or brave). This is a "
-                                       "configuration problem: tell the user.")
-            label, lacks, fn = BACKENDS[name]
-            missing = lacks()
-            if missing and not chosen:
-                continue
-            if missing:
-                raise SearchSetupError(f"SEARCH_BACKENDS names {label}, which needs {missing}. "
-                                       "This is a configuration problem: tell the user.")
-            res = fn(query, MAX_RESULTS)
-        except SearchSetupError as e:
-            log(f"backend {name} set up wrongly")
-            raise SearchSetupError(" ".join(errors + [f"Web search could not run: {e}"]))
-        except SearchUnavailable as e:
-            log(f"backend {name} unavailable: {e}")
-            errors.append(str(e))
-            continue
-        except (requests.RequestException, ValueError) as e:  # network, bad JSON
-            log(f"backend {name} failed: {type(e).__name__}")  # message can hold the URL
-            errors.append(f"{label} could not be reached ({type(e).__name__}).")
-            continue
-        if res:
-            _cache_put(key, (name, res))
-            return name, res
-        empty_from = empty_from or name  # try the next backend before giving up
-
-    if empty_from:
-        _cache_put(key, (empty_from, []))
-        return empty_from, []
-
-    raise SearchUnavailable("Web search is unavailable right now; this is not an empty "
-                            "result. " + " ".join(errors) + " Try again later, or "
-                            "web_fetch a URL you already know.")
-
-
 # ---- web_fetch ----------------------------------------------------------------
-
-TEXT_TYPES = ("text/", "html", "xml", "json", "javascript")
-
-
-def _check_public(url: str):
-    """Refuse URLs that resolve to loopback, private, link-local or other
-    non-public addresses: the agent follows links from pages it has read, and a
-    page can steer it at local services or cloud metadata endpoints.
-    (A DNS answer that changes between this check and the request could still
-    slip through; this is a guard rail, not a sandbox.)"""
-    if os.environ.get("WEB_FETCH_ALLOW_PRIVATE") == "1":
-        return
-    p = urlparse(url)
-    if p.scheme not in ("http", "https"):
-        raise ValueError("only http(s) URLs can be fetched")
-    host = p.hostname
-    if not host:
-        raise ValueError("URL has no host")
-    try:
-        infos = socket.getaddrinfo(host, p.port or (443 if p.scheme == "https" else 80),
-                                   proto=socket.IPPROTO_TCP)
-    except socket.gaierror:
-        raise ValueError(f"could not resolve host {host}")
-    for info in infos:
-        ip = ipaddress.ip_address(info[4][0].split("%")[0])
-        if not ip.is_global:
-            raise ValueError(f"refusing to fetch {host}: it resolves to a non-public "
-                             f"address ({ip}). Set WEB_FETCH_ALLOW_PRIVATE=1 to allow "
-                             "local and private URLs.")
 
 
 def _charset(ctype: str):
@@ -540,135 +367,25 @@ def web_fetch(url: str, max_chars: int = 6000) -> str:
     return text or "(page had no extractable text)"
 
 
-# ---- dispatch -----------------------------------------------------------------
+# ---- the MCP side, shared with the other search server (search_common.py) ----
+
+SERVER_INFO = {"name": "local-search", "version": "1.1.0"}
+
+
+def run_search(query: str):
+    return common.run_search(query, BACKENDS, (requests.RequestException, ValueError))  # network, bad JSON
+
 
 def dispatch_tool(name: str, args: dict) -> str:
-    logpath = os.environ.get("SEARCH_MCP_LOG")
-    if logpath:
-        try:
-            with open(logpath, "a") as fh:
-                # The tool name only: queries and URLs come from the user's
-                # conversation. LOCAL_SEARCH_LOG_QUERIES=1 logs them as well.
-                detail = f" {json.dumps(args)[:200]}" if os.environ.get("LOCAL_SEARCH_LOG_QUERIES") == "1" else ""
-                fh.write(f"{time.strftime('%H:%M:%S')} {name}{detail}\n")
-        except OSError:
-            pass
-    if name == "web_search":
-        query = str(args["query"]).strip()
-        if not query:
-            raise ValueError("query is empty")
-        k = max(1, min(int(args.get("max_results", 5) or 5), MAX_RESULTS))
-        source, res = run_search(query)
-        res = res[:k]
-        if not res:
-            return f"No results found for: {query}"
-        lines = [f"Web search results for: {query} (via {source})", ""]
-        for i, r in enumerate(res, 1):
-            lines.append(f"{i}. {r['title']}")
-            lines.append(f"   URL: {r['url']}")
-            if r["snippet"]:
-                lines.append(f"   {r['snippet']}")
-            lines.append("")
-        return "\n".join(lines).strip()
-    if name == "web_fetch":
-        max_chars = max(200, min(int(args.get("max_chars", 6000) or 6000), 100_000))
-        return web_fetch(str(args["url"]), max_chars)
-    raise ValueError(f"unknown tool: {name}")
+    return common.dispatch_tool(name, args, run_search, web_fetch)
 
-
-# ---- MCP tool declarations --------------------------------------------------
-
-TOOLS = [
-    {
-        "name": "web_search",
-        "description": ("Search the web for current information. Returns a numbered list "
-                        "of results with title, URL, and snippet. Use for up-to-date facts, "
-                        "library docs, error messages, or anything not already in the local "
-                        "codebase. Repeated queries are answered from a short cache; if it "
-                        "reports search as unavailable, don't retry immediately."),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "query": {"type": "string", "description": "the search query"},
-                "max_results": {"type": "integer", "description": "results to return (default 5, max 10)"},
-            },
-            "required": ["query"],
-        },
-    },
-    {
-        "name": "web_fetch",
-        "description": ("Fetch a URL and return its readable text (HTML stripped, truncated). "
-                        "Use after web_search to read a specific result page. Public "
-                        "http(s) pages only; binary files such as PDFs are not extracted."),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "url": {"type": "string", "description": "the URL to fetch"},
-                "max_chars": {"type": "integer", "description": "max characters to return (default 6000)"},
-            },
-            "required": ["url"],
-        },
-    },
-]
-
-
-# ---- JSON-RPC dispatch ------------------------------------------------------
 
 def handle(req: dict):
-    method = req.get("method")
-    rid = req.get("id")
-    if method == "initialize":
-        pv = (req.get("params") or {}).get("protocolVersion", "2024-11-05")
-        return {"jsonrpc": "2.0", "id": rid, "result": {
-            "protocolVersion": pv,
-            "capabilities": {"tools": {}},
-            "serverInfo": {"name": "local-search", "version": "1.1.0"}}}
-    if method == "tools/list":
-        return {"jsonrpc": "2.0", "id": rid, "result": {"tools": TOOLS}}
-    if method == "prompts/list":
-        return {"jsonrpc": "2.0", "id": rid, "result": {"prompts": []}}
-    if method == "resources/list":
-        return {"jsonrpc": "2.0", "id": rid, "result": {"resources": []}}
-    if method == "ping":
-        return {"jsonrpc": "2.0", "id": rid, "result": {}}
-    if method == "tools/call":
-        params = req.get("params") or {}
-        name = params.get("name")
-        args = params.get("arguments") or {}
-        try:
-            text = dispatch_tool(name, args)
-            is_error = False
-        except Exception as e:  # surface as a tool error, not a protocol crash
-            log(f"tool {name} failed: {type(e).__name__}")  # the message can hold the URL
-            text = f"Error running {name}: {e}"
-            is_error = True
-        return {"jsonrpc": "2.0", "id": rid, "result": {
-            "content": [{"type": "text", "text": text}], "isError": is_error}}
-    if rid is not None:  # unknown *request*
-        return {"jsonrpc": "2.0", "id": rid,
-                "error": {"code": -32601, "message": f"Method not found: {method}"}}
-    return None  # unknown notification → ignore
+    return common.handle(req, dispatch_tool, SERVER_INFO)
 
 
 def main():
-    usable = [b for b in _order()[0] if b in BACKENDS and not BACKENDS[b][1]()]
-    log(f"started; search backends: {', '.join(usable) or 'none'}")
-    while True:
-        line = sys.stdin.readline()
-        if not line:
-            break
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            req = json.loads(line)
-        except json.JSONDecodeError:
-            log("bad json line ignored")
-            continue
-        resp = handle(req)
-        if resp is not None and req.get("id") is not None:
-            send(resp)
-    log("stdin closed, exiting")
+    common.main(handle, BACKENDS)
 
 
 if __name__ == "__main__":

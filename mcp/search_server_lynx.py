@@ -3,7 +3,9 @@
 
 Sites see an ordinary Lynx client: Lynx's own User-Agent, no JS, no CSS,
 no images, no headless Chrome fingerprint. The model sees Lynx's ``-dump``
-output: plain text with numbered [n] links and a "References" list.
+output: plain text with numbered [n] links and a "References" list. The
+protocol, the engine chain and the messages are shared with search_server.py
+through search_common.py.
 
 Search backends (default: DuckDuckGo lite; configurable via env):
 
@@ -32,44 +34,30 @@ Other knobs (all optional):
 Protocol channel is stdout — all logging goes to stderr.
 """
 import fcntl
-import ipaddress
 import json
 import os
 import random
 import re
 import shutil
-import socket
 import subprocess
-import sys
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections import OrderedDict
 from contextlib import contextmanager
 from urllib.parse import parse_qs, unquote, urljoin, urlparse
+
+import search_common as common
+from search_common import (MAX_RESULTS, TEXT_TYPES, SearchBlocked, SearchSetupError, SearchUnavailable,
+                           _brave_key, _brave_key_file, _check_public, _ddg_refusing, _env_float,
+                           _state_dir, log)
+
+common.LOG_TAG = "[search-lynx]"  # its log lines say which server wrote them
 
 LYNX = os.environ.get("LYNX_BIN") or shutil.which("lynx") or "lynx"
 LYNX_TIMEOUT = int(os.environ.get("LYNX_TIMEOUT", "25"))
 LYNX_WIDTH = int(os.environ.get("LYNX_WIDTH", "100"))
 
-MAX_RESULTS = 10
-
-def log(*a):
-    print("[search-lynx]", *a, file=sys.stderr, flush=True)
-
-def send(msg):
-    sys.stdout.write(json.dumps(msg) + "\n")
-    sys.stdout.flush()
-
-def _env_float(name: str, default: float) -> float:
-    try:
-        return float(os.environ.get(name, default))
-    except ValueError:
-        return default
-
-def _state_dir() -> str:
-    return os.environ.get("LOCAL_CLAUDE_STATE") or os.path.expanduser("~/.local-claude")
 
 # ---- Lynx helpers -----------------------------------------------------------
 
@@ -212,14 +200,6 @@ def _parse_ddg_dump(text: str, k: int = MAX_RESULTS) -> list:
 
 # ---- DuckDuckGo via lynx -----------------------------------------------------
 
-# Models retell these to the user, and a vaguer version came out as a claim that
-# the user's configuration blocked search, so say what it is and what it is not.
-def _ddg_refusing(seconds: float) -> str:
-    return ("DuckDuckGo is refusing automated searches from this machine for now (its rate "
-            "limit after a burst of searches; not a configuration problem). No search is "
-            f"sent to it for {max(1, round(seconds / 60))} min, because searching during "
-            "the block prolongs it.")
-
 
 class DuckDuckGoLynx:
     URL = "https://lite.duckduckgo.com/lite/?q={q}"
@@ -299,30 +279,13 @@ class DuckDuckGoLynx:
         return results
 
 
-# ---- Shared backend infrastructure (same as search_server.py) ----------------
+# ---- keyed / self-hosted backends -------------------------------------------
 
-class SearchUnavailable(Exception):
-    """A backend could not answer for now: blocked, rate-limited or down."""
-
-class SearchBlocked(SearchUnavailable):
-    """DuckDuckGo answered with its bot check instead of results."""
-
-class SearchSetupError(Exception):
-    """A backend is set up wrongly: the user has to fix something."""
 
 def _strip_tags(s: str) -> str:
     import re as _re
     return _re.sub(r"<[^>]+>", "", s or "").strip()
 
-def _brave_key_file() -> str:
-    return os.environ.get("SEARCH_BRAVE_KEY_FILE") or os.path.join(_state_dir(), "brave-search.key")
-
-def _brave_key() -> str:
-    try:
-        with open(_brave_key_file()) as fh:
-            return fh.read().strip()
-    except OSError:
-        return ""
 
 def brave_search(query: str, k: int = MAX_RESULTS):
     key = _brave_key()
@@ -391,106 +354,9 @@ BACKENDS = {
                 brave_search),
 }
 
-def _order():
-    chosen = os.environ.get("SEARCH_BACKENDS", "").strip()
-    return [b.strip().lower() for b in (chosen or "ddg,searxng,brave").split(",") if b.strip()], bool(chosen)
-
-# ---- cache -------------------------------------------------------------------
-
-_cache: "OrderedDict[str, tuple]" = OrderedDict()
-_CACHE_MAX = 256
-
-def _cache_key(query: str) -> str:
-    return " ".join(query.split()).lower()
-
-def _cache_get(key):
-    ttl = _env_float("SEARCH_CACHE_TTL", 900.0)
-    hit = _cache.get(key)
-    if hit and time.monotonic() - hit[0] < ttl:
-        _cache.move_to_end(key)
-        return hit[1]
-    _cache.pop(key, None)
-    return None
-
-def _cache_put(key, value):
-    if _env_float("SEARCH_CACHE_TTL", 900.0) <= 0:
-        return
-    _cache[key] = (time.monotonic(), value)
-    _cache.move_to_end(key)
-    while len(_cache) > _CACHE_MAX:
-        _cache.popitem(last=False)
-
-def run_search(query: str):
-    """Return (backend_name, results)."""
-    key = _cache_key(query)
-    cached = _cache_get(key)
-    if cached is not None:
-        return cached
-
-    order, chosen = _order()
-    errors, empty_from = [], None
-    for name in order:
-        try:
-            if name not in BACKENDS:
-                raise SearchSetupError(f"SEARCH_BACKENDS names '{name}', which is not a search "
-                                       "backend (use ddg, searxng or brave). This is a "
-                                       "configuration problem: tell the user.")
-            label, lacks, fn = BACKENDS[name]
-            missing = lacks()
-            if missing and not chosen:
-                continue
-            if missing:
-                raise SearchSetupError(f"SEARCH_BACKENDS names {label}, which needs {missing}. "
-                                       "This is a configuration problem: tell the user.")
-            res = fn(query, MAX_RESULTS)
-        except SearchSetupError as e:
-            log(f"backend {name} set up wrongly")
-            raise SearchSetupError(" ".join(errors + [f"Web search could not run: {e}"]))
-        except SearchUnavailable as e:
-            log(f"backend {name} unavailable: {e}")
-            errors.append(str(e))
-            continue
-        except (ValueError, RuntimeError) as e:  # lynx errors, etc.
-            log(f"backend {name} failed: {type(e).__name__}")
-            errors.append(f"{label} could not be reached ({type(e).__name__}).")
-            continue
-        if res:
-            _cache_put(key, (name, res))
-            return name, res
-        empty_from = empty_from or name
-
-    if empty_from:
-        _cache_put(key, (empty_from, []))
-        return empty_from, []
-
-    raise SearchUnavailable("Web search is unavailable right now; this is not an empty "
-                            "result. " + " ".join(errors) + " Try again later, or "
-                            "web_fetch a URL you already know.")
 
 # ---- web_fetch ----------------------------------------------------------------
 
-TEXT_TYPES = ("text/", "html", "xml", "json", "javascript")
-
-def _check_public(url: str):
-    if os.environ.get("WEB_FETCH_ALLOW_PRIVATE") == "1":
-        return
-    p = urlparse(url)
-    if p.scheme not in ("http", "https"):
-        raise ValueError("only http(s) URLs can be fetched")
-    host = p.hostname
-    if not host:
-        raise ValueError("URL has no host")
-    try:
-        infos = socket.getaddrinfo(host, p.port or (443 if p.scheme == "https" else 80),
-                                   proto=socket.IPPROTO_TCP)
-    except socket.gaierror:
-        raise ValueError(f"could not resolve host {host}")
-    for info in infos:
-        ip = ipaddress.ip_address(info[4][0].split("%")[0])
-        if not ip.is_global:
-            raise ValueError(f"refusing to fetch {host}: it resolves to a non-public "
-                             f"address ({ip}). Set WEB_FETCH_ALLOW_PRIVATE=1 to allow "
-                             "local and private URLs.")
 
 def _probe(url: str):
     """One request, redirects unfollowed: (HTTP status or 0, lower-cased headers)."""
@@ -535,130 +401,27 @@ def web_fetch(url: str, max_chars: int = 6000) -> str:
                                    "with a more specific fetch if needed]")
     return text or "(page rendered no extractable text)"
 
-# ---- dispatch -----------------------------------------------------------------
+
+# ---- the MCP side, shared with the other search server (search_common.py) ----
+
+SERVER_INFO = {"name": "local-search-lynx", "version": "1.0.0"}
+
+
+def run_search(query: str):
+    return common.run_search(query, BACKENDS, (ValueError, RuntimeError))  # lynx failed, bad JSON
+
 
 def dispatch_tool(name: str, args: dict) -> str:
-    logpath = os.environ.get("SEARCH_MCP_LOG")
-    if logpath:
-        try:
-            with open(logpath, "a") as fh:
-                detail = f" {json.dumps(args)[:200]}" if os.environ.get("LOCAL_SEARCH_LOG_QUERIES") == "1" else ""
-                fh.write(f"{time.strftime('%H:%M:%S')} {name}{detail}\n")
-        except OSError:
-            pass
-    if name == "web_search":
-        query = str(args["query"]).strip()
-        if not query:
-            raise ValueError("query is empty")
-        k = max(1, min(int(args.get("max_results", 5) or 5), MAX_RESULTS))
-        source, res = run_search(query)
-        res = res[:k]
-        if not res:
-            return f"No results found for: {query}"
-        lines = [f"Web search results for: {query} (via {source})", ""]
-        for i, r in enumerate(res, 1):
-            lines.append(f"{i}. {r['title']}")
-            lines.append(f"   URL: {r['url']}")
-            if r.get("snippet"):
-                lines.append(f"   {r['snippet']}")
-            lines.append("")
-        return "\n".join(lines).strip()
-    if name == "web_fetch":
-        max_chars = max(200, min(int(args.get("max_chars", 6000) or 6000), 100_000))
-        return web_fetch(str(args["url"]), max_chars)
-    raise ValueError(f"unknown tool: {name}")
+    return common.dispatch_tool(name, args, run_search, web_fetch)
 
-# ---- MCP tool declarations --------------------------------------------------
-
-TOOLS = [
-    {
-        "name": "web_search",
-        "description": ("Search the web for current information. Returns a numbered list "
-                        "of results with title, URL, and snippet. Use for up-to-date facts, "
-                        "library docs, error messages, or anything not already in the local "
-                        "codebase. Repeated queries are answered from a short cache; if it "
-                        "reports search as unavailable, don't retry immediately."),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "query": {"type": "string", "description": "the search query"},
-                "max_results": {"type": "integer", "description": "results to return (default 5, max 10)"},
-            },
-            "required": ["query"],
-        },
-    },
-    {
-        "name": "web_fetch",
-        "description": ("Fetch a URL and return its readable text (HTML stripped, truncated). "
-                        "Use after web_search to read a specific result page. Public "
-                        "http(s) pages only; binary files such as PDFs are not extracted."),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "url": {"type": "string", "description": "the URL to fetch"},
-                "max_chars": {"type": "integer", "description": "max characters to return (default 6000)"},
-            },
-            "required": ["url"],
-        },
-    },
-]
-
-# ---- JSON-RPC dispatch ------------------------------------------------------
 
 def handle(req: dict):
-    method = req.get("method")
-    rid = req.get("id")
-    if method == "initialize":
-        pv = (req.get("params") or {}).get("protocolVersion", "2024-11-05")
-        return {"jsonrpc": "2.0", "id": rid, "result": {
-            "protocolVersion": pv,
-            "capabilities": {"tools": {}},
-            "serverInfo": {"name": "local-search-lynx", "version": "1.0.0"}}}
-    if method == "tools/list":
-        return {"jsonrpc": "2.0", "id": rid, "result": {"tools": TOOLS}}
-    if method == "prompts/list":
-        return {"jsonrpc": "2.0", "id": rid, "result": {"prompts": []}}
-    if method == "resources/list":
-        return {"jsonrpc": "2.0", "id": rid, "result": {"resources": []}}
-    if method == "ping":
-        return {"jsonrpc": "2.0", "id": rid, "result": {}}
-    if method == "tools/call":
-        params = req.get("params") or {}
-        name = params.get("name")
-        args = params.get("arguments") or {}
-        try:
-            text = dispatch_tool(name, args)
-            is_error = False
-        except Exception as e:
-            log(f"tool {name} failed: {type(e).__name__}")
-            text = f"Error running {name}: {e}"
-            is_error = True
-        return {"jsonrpc": "2.0", "id": rid, "result": {
-            "content": [{"type": "text", "text": text}], "isError": is_error}}
-    if rid is not None:
-        return {"jsonrpc": "2.0", "id": rid,
-                "error": {"code": -32601, "message": f"Method not found: {method}"}}
-    return None
+    return common.handle(req, dispatch_tool, SERVER_INFO)
+
 
 def main():
-    usable = [b for b in _order()[0] if b in BACKENDS and not BACKENDS[b][1]()]
-    log(f"started; search backends: {', '.join(usable) or 'none'}")
-    while True:
-        line = sys.stdin.readline()
-        if not line:
-            break
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            req = json.loads(line)
-        except json.JSONDecodeError:
-            log("bad json line ignored")
-            continue
-        resp = handle(req)
-        if resp is not None and req.get("id") is not None:
-            send(resp)
-    log("stdin closed, exiting")
+    common.main(handle, BACKENDS)
+
 
 if __name__ == "__main__":
     main()
