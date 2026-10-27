@@ -24,7 +24,8 @@ Other knobs (all optional):
   DDG_COOLDOWN       first back-off after a bot check, seconds (default 300)
   DDG_MAX_COOLDOWN   max back-off, seconds (default 1800)
   SEARCH_CACHE_TTL   seconds to reuse results (default 900; 0 = off)
-  WEB_FETCH_MAX_BYTES  download cap for web_fetch (default 2000000)
+  (No WEB_FETCH_MAX_BYTES here: lynx reads a page whole. max_chars, the tool's
+  own argument, still limits what reaches the model.)
   WEB_FETCH_ALLOW_PRIVATE=1  let web_fetch reach localhost / private networks
   SEARCH_MCP_LOG     log path, as in search_server.py
 
