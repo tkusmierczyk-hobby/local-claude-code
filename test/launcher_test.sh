@@ -301,5 +301,21 @@ done
 grep -q "Makefile targets: build" "$I/CLAUDE.md"
 check "init: lists the Makefile's targets" $?
 
+# ---- syntax-check hook (installed by init) -------------------------------------
+H="$ROOT/hook"; mkdir -p "$H"
+printf 'def f(:\n' > "$H/bad.py"; printf 'x = 1\n' > "$H/good.py"
+printf '{\n  // TypeScript allows comments\n  "compilerOptions": {"baseUrl": "http://x//y", "strict": true,},\n}\n' > "$H/tsconfig.json"
+printf '{"a": }\n' > "$H/bad.json"
+# hook FILE [env...] — the hook's exit status for an edit of FILE
+hook() { local f="$1"; shift; printf '{"tool_input": {"file_path": "%s"}}' "$f" | env "$@" "$HERE/hooks/syntax_check.sh" >/dev/null 2>&1; echo $?; }
+[ "$(hook "$H/bad.py" -u LOCAL_CLAUDE)" = 0 ]
+check "hook: a cloud session (no LOCAL_CLAUDE=1) is left alone" $?
+[ "$(hook "$H/bad.py" LOCAL_CLAUDE=1)" = 2 ] && [ "$(hook "$H/bad.json" LOCAL_CLAUDE=1)" = 2 ]
+check "hook: broken Python and JSON are sent back" $?
+[ "$(hook "$H/good.py" LOCAL_CLAUDE=1)" = 0 ] && [ ! -e "$H/__pycache__" ]
+check "hook: checking Python leaves no __pycache__ in the project" $?
+[ "$(hook "$H/tsconfig.json" LOCAL_CLAUDE=1)" = 0 ]
+check "hook: JSON with comments and trailing commas (tsconfig.json) passes" $?
+
 echo "launcher: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
