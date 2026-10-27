@@ -5,7 +5,8 @@ permissions, hooks and subagents — but inference happens locally, and nothing
 contacts Anthropic at runtime. The only outside traffic is web search when the
 model uses it: queries go to the search engines you enable (DuckDuckGo, needing
 no setup, by default) and pages are fetched from the sites themselves — see
-[Web search](#web-search); `LOCAL_SEARCH=0` turns it off.
+[Web search](#web-search); `LOCAL_SEARCH=0` turns it off. What is kept, where,
+and how to keep nothing: [Privacy](#privacy).
 
 The interesting part is what makes it usable: a 35-billion-parameter model on an
 8 GB graphics card, at a speed you can actually work with. That is not
@@ -144,10 +145,8 @@ WebSearch runs on Anthropic's servers, so against a local model it returns
 nothing.
 
 **What leaves your machine:** each search goes to the engine that answers it,
-and each fetched page comes from its site. Nothing goes to Anthropic. The
-server's log records which tool ran, not the query or the URL
-(`LOCAL_SEARCH_LOG_QUERIES=1` logs those too), and with `LOCAL_STORAGE=none` there
-is no such log.
+and each fetched page comes from its site. Nothing goes to Anthropic. What is
+logged, and how to log nothing: [Privacy](#privacy).
 
 ### Search engines
 
@@ -217,6 +216,72 @@ plain API calls in both.
 Every search option is in [docs/TUNING.md](docs/TUNING.md); fixes are in
 [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md#web-search-does-not-work).
 
+## Privacy
+
+The model runs on your machine, and nothing goes to Anthropic at runtime. What
+leaves the machine is the web search you allow and the downloads you start.
+Local sessions keep their data apart from your cloud Claude Code sessions, or
+keep nothing of the conversation at all.
+
+### What is kept on your machine
+
+| What | Where | What it holds | To keep none |
+|---|---|---|---|
+| Session history: transcripts (`/resume`), prompt history (up arrow), auto-memory, file snapshots (`/rewind`) | `~/.local-claude/claude` | your conversations, in full | `LOCAL_STORAGE=none` |
+| Claude Code's housekeeping | the same folder: `.claude.json` and its backups | install IDs, start times, plugin counters and, from interactive sessions, which project folders you trusted | — (nothing of the conversation) |
+| Claude Code's log of its connection to the search server | `~/.cache/claude-cli-nodejs/<project>/mcp-logs-search/` (Linux path) | connection events, the search server's start-up and error lines; never queries | `LOCAL_SEARCH=0`: Claude Code has no switch for this log |
+| Server log | `~/.local-claude/llama-server.log` | timings and token counts of each request; no prompts | `LOCAL_SERVER_LOG=0`, when the server starts; the default under `LOCAL_STORAGE=none` |
+| Search log | `~/.local-claude/search-mcp.log` | the time and tool of each call; queries and URLs too with `LOCAL_SEARCH_LOG_QUERIES=1` | `LOCAL_STORAGE=none` |
+| DuckDuckGo pacing | `~/.local-claude/ddg-pacing.json` | times of the last search and of any pause | — (every session needs it to pace searches) |
+| Prompt cache | the server's memory | recent conversations, so the next turn starts faster | gone when the server stops |
+| Settings, tuning and downloads | `~/.local-claude/`, `~/models/*.log` | configuration, measurements, download progress | — |
+
+Two cautions. `LOCAL_LLAMA_ARGS=--verbose` makes the server write every prompt and
+reply to its log in full; it is for debugging, on a test port
+([docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md#seeing-what-the-model-reads-and-writes)).
+And `LOCAL_STORAGE=shared` puts session history in `~/.claude`, where your cloud
+sessions read it; by default it stays apart, and local sessions also skip your
+global `~/.claude/CLAUDE.md` (`LOCAL_GLOBAL_CLAUDE_MD=1` loads it).
+
+### What leaves your machine
+
+| To | When | What | To turn off |
+|---|---|---|---|
+| Anthropic | never, at runtime | nothing. Switched off: telemetry, error reports, update and installation checks, the plugin marketplace Claude Code fetches on a first run, feedback reports (they would send the transcript), session mirroring to claude.ai, remote control, messages from other sessions, and Claude Code's own web tools (its WebFetch asks Anthropic about every domain; its WebSearch runs on Anthropic's servers) | already off. To allow them again: `LOCAL_BACKGROUND_TRAFFIC=1`, `LOCAL_FEEDBACK=1`, `LOCAL_REMOTE=1`, `LOCAL_BUILTIN_WEBFETCH=1` (its domain check stays skipped), `LOCAL_BUILTIN_WEBSEARCH=1` |
+| A search engine: DuckDuckGo, your SearXNG (which passes it on to its engines), or Brave | when the model searches | the query, from your IP address; Brave also gets your API key, so it knows the account | `LOCAL_SEARCH=0`; `SEARCH_BACKENDS` chooses engines ([Web search](#web-search)) |
+| Websites | when the model uses `web_fetch` | a request for the page, from your IP address | `LOCAL_SEARCH=0`. Local and private addresses are refused unless `WEB_FETCH_ALLOW_PRIVATE=1` |
+| Hugging Face | `local-claude pull` | which file you download | — |
+| GitHub | `./install.sh`, `./bin/build-cuda.sh` | requests for llama.cpp's releases (and conda-forge with `--install-nvcc`) | — |
+
+The model server itself listens on this machine only (`127.0.0.1`). `LOCAL_HOST`
+opens it to the network; set `LOCAL_API_KEY` then.
+
+### Keeping nothing
+
+```bash
+local-claude stop        # a running server keeps the log setting it started with
+LOCAL_STORAGE=none LOCAL_SEARCH=0 local-claude
+```
+
+No transcript, history, memory or log is kept, and nothing leaves the machine;
+the only files a session writes are Claude Code's housekeeping. To delete what
+earlier sessions kept: `rm -rf ~/.local-claude/claude` (all local session
+history), `rm -f ~/.local-claude/*.log`, and the local projects' folders in
+`~/.cache/claude-cli-nodejs/`, which also holds those of cloud sessions.
+
+### How this is checked
+
+- **Your own settings win.** A Claude Code variable or settings key you set
+  yourself overrides these defaults ([docs/TUNING.md](docs/TUNING.md#everything-else)).
+- **What a session leaves on disk:** `test/storage_test.sh` runs real sessions
+  and checks that under `LOCAL_STORAGE=none` nothing from the conversation is left
+  anywhere. Last run with Claude Code 2.1.311; it does not cover the up-arrow
+  history of interactive sessions.
+- **What a session connects to:** [CLAUDE.md](CLAUDE.md) describes the network
+  trace that shows it.
+- Claude Code is updated separately and can change either, so re-run both after
+  an update. Only Linux is tested.
+
 ## Tests
 
 ```bash
@@ -240,10 +305,9 @@ model. The stack compensates automatically rather than hoping:
 | Syntax errors fed straight back to the model | `hooks/syntax_check.sh` on Write/Edit |
 | Cannot declare "done" while `.claude/verify.sh` fails | `hooks/verify_on_stop.sh`, max 2 retries |
 | Web search and fetch through a local server, with Claude Code's own web tools off — see [Web search](#web-search) | `LOCAL_SEARCH=0` for no web access at all; `LOCAL_BUILTIN_WEBFETCH=1` allows the built-in fetch, with the Anthropic check skipped; `LOCAL_BUILTIN_WEBSEARCH=1` the built-in search |
-| No background traffic to Anthropic, no feedback reports, no mirroring to claude.ai, remote control or messages from other sessions | `LOCAL_BACKGROUND_TRAFFIC=1`, `LOCAL_FEEDBACK=1`, `LOCAL_REMOTE=1`. Any Claude Code variable or `--settings` key you set yourself also wins over these defaults |
+| Nothing goes to Anthropic, and local sessions keep their history apart from cloud sessions, or none at all — see [Privacy](#privacy) | `LOCAL_STORAGE=none` keeps nothing of the conversation; `LOCAL_SEARCH=0` sends nothing out. Any Claude Code variable or `--settings` key you set yourself wins over these defaults |
 | Your global `~/.claude/CLAUDE.md` is skipped: it is written for the cloud model and costs context | `LOCAL_GLOBAL_CLAUDE_MD=1` to load it anyway |
 | Instructions of your own for every local session, written for the local model | `~/.local-claude/CLAUDE.md`, if you create it |
-| Local sessions keep their history and memory in a folder of their own, `~/.local-claude/claude`, never in `~/.claude`, where cloud sessions would pick them up | `LOCAL_STORAGE=none` keeps no transcript, history or memory, and no search or server log; a few housekeeping files remain, with nothing of the conversation in them ([details](docs/TUNING.md#everything-else)). `LOCAL_STORAGE=shared` uses `~/.claude` |
 | Best-of-N attempts gated on your acceptance test | `local-claude attempts 3 "..."` |
 
 ## Documentation
