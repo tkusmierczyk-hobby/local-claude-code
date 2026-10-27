@@ -88,6 +88,7 @@ say "2/5  Fetching llama.cpp source"
 if [ -z "$SRC_BUILD" ]; then
   # Match the installed binaries so the CUDA build is a like-for-like swap.
   SRC_BUILD="$(basename "$(readlink -f "$PREFIX/current" 2>/dev/null)" 2>/dev/null || true)"
+  SRC_BUILD="${SRC_BUILD%-cuda}"   # current may already be a CUDA build of that revision
   case "$SRC_BUILD" in b[0-9]*|v[0-9]*) ;; *) SRC_BUILD="" ;; esac
 fi
 [ -n "$SRC_BUILD" ] || SRC_BUILD="$(curl -fsSL 'https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=10' \
@@ -98,11 +99,18 @@ SRC="$PREFIX/src/llama.cpp-$SRC_BUILD"
 if [ ! -f "$SRC/CMakeLists.txt" ]; then
   mkdir -p "$PREFIX/src"
   TARBALL="$PREFIX/src/$SRC_BUILD.tar.gz"
-  [ -s "$TARBALL" ] || curl -fL -C - --progress-bar -o "$TARBALL" \
-    "https://github.com/ggml-org/llama.cpp/archive/refs/tags/${SRC_BUILD}.tar.gz" \
-    || die "could not download llama.cpp source for $SRC_BUILD"
+  # Downloaded whole into .part and renamed once complete: a download cut short
+  # under the final name was trusted by every later run. Not resumed, since
+  # GitHub's generated archives need not serve byte ranges; it is ~25 MB.
+  if [ ! -s "$TARBALL" ]; then
+    curl -fL --progress-bar -o "$TARBALL.part" \
+      "https://github.com/ggml-org/llama.cpp/archive/refs/tags/${SRC_BUILD}.tar.gz" \
+      || die "could not download llama.cpp source for $SRC_BUILD"
+    mv -f "$TARBALL.part" "$TARBALL"
+  fi
   rm -rf "$SRC"; mkdir -p "$SRC"
-  tar xzf "$TARBALL" -C "$SRC" --strip-components=1
+  tar xzf "$TARBALL" -C "$SRC" --strip-components=1 \
+    || { rm -rf "$TARBALL" "$SRC"; die "$TARBALL was damaged; deleted it, re-run to download it again"; }
 fi
 info "source    $SRC"
 
