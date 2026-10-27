@@ -33,24 +33,19 @@ Other knobs (all optional):
 
 Protocol channel is stdout — all logging goes to stderr.
 """
-import fcntl
 import json
 import os
-import random
 import re
 import shutil
 import subprocess
-import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from contextlib import contextmanager
 from urllib.parse import parse_qs, unquote, urljoin, urlparse
 
 import search_common as common
-from search_common import (MAX_RESULTS, TEXT_TYPES, SearchBlocked, SearchSetupError, SearchUnavailable,
-                           _brave_key, _brave_key_file, _check_public, _ddg_refusing, _env_float,
-                           _state_dir, log)
+from search_common import (MAX_RESULTS, TEXT_TYPES, DuckDuckGoPacing, SearchSetupError, SearchUnavailable,
+                           _brave_key, _brave_key_file, _check_public)
 
 common.LOG_TAG = "[search-lynx]"  # its log lines say which server wrote them
 
@@ -201,51 +196,12 @@ def _parse_ddg_dump(text: str, k: int = MAX_RESULTS) -> list:
 # ---- DuckDuckGo via lynx -----------------------------------------------------
 
 
-class DuckDuckGoLynx:
+class DuckDuckGoLynx(DuckDuckGoPacing):
     URL = "https://lite.duckduckgo.com/lite/?q={q}"
     # Lynx renders text, so the bot check is recognised by its wording; its
     # HTML (anomaly-modal, challenge-form) never reaches the dump.
     BLOCK_MARKERS = ("bots use duckduckgo too",
                      "confirm this search was made by a human")
-
-    def __init__(self):
-        self.min_interval = _env_float("DDG_MIN_INTERVAL", 5.0)
-        self.jitter = max(0.0, _env_float("DDG_JITTER", 3.0))
-        self.base_cooldown = _env_float("DDG_COOLDOWN", 300.0)
-        self.max_cooldown = _env_float("DDG_MAX_COOLDOWN", 1800.0)
-        self.own_state = {}
-
-    @contextmanager
-    def _state(self):
-        """Shared pacing state (file-level lock)."""
-        try:
-            fh = open(os.path.join(_state_dir(), "ddg-pacing.json"), "a+")
-        except OSError:
-            yield self.own_state
-            return
-        with fh:
-            fcntl.flock(fh, fcntl.LOCK_EX)
-            fh.seek(0)
-            try:
-                st = json.loads(fh.read() or "{}")
-            except ValueError:
-                st = {}
-            if not isinstance(st, dict):
-                st = {}
-            yield st
-            fh.truncate(0)
-            json.dump(st, fh)
-
-    def _turn(self):
-        """Wait for the next allowed request."""
-        with self._state() as st:
-            now = time.time()
-            left = st.get("until", 0) - now
-            if 0 < left <= self.max_cooldown:
-                raise SearchBlocked(_ddg_refusing(left))
-            gap = self.min_interval + random.uniform(0.0, self.jitter)
-            time.sleep(min(gap, max(0.0, st.get("last", 0) + gap - now)))
-            st["last"] = time.time()
 
     def _is_blocked(self, text: str, results) -> bool:
         if results:
@@ -254,21 +210,9 @@ class DuckDuckGoLynx:
         return any(m in low for m in self.BLOCK_MARKERS)
 
     def _record(self, text: str, results):
-        """Record success or block."""
-        blocked = self._is_blocked(text, results)
-        with self._state() as st:
-            if blocked:
-                st["strikes"] = min(st.get("strikes", 0) + 1, 16)
-                cool = min(self.base_cooldown * 2 ** (st["strikes"] - 1), self.max_cooldown)
-                st["until"] = time.time() + cool
-            elif results:
-                st["strikes"] = 0
-        # Raised only once the state is written back: raised inside the `with`,
-        # it skipped the write, so the pause was never recorded.
-        if blocked:
-            log(f"duckduckgo served its bot check; pausing for {cool:.0f}s "
-                f"(block #{st['strikes']} in a row)")
-            raise SearchBlocked(_ddg_refusing(cool))
+        """Record a bot check or an answer (DuckDuckGoPacing). Lynx shows no HTTP
+        status, so an answer is a page with results."""
+        self._record_outcome(self._is_blocked(text, results), bool(results))
 
     def search(self, query: str, k: int = MAX_RESULTS):
         self._turn()

@@ -9,13 +9,16 @@ through, the result cache, the public-address check for web_fetch, and the
 messages the model sees. Standard library only: the lynx server needs neither
 requests nor bs4. test/mcp_parity_test.py checks that both servers agree.
 """
+import fcntl
 import ipaddress
 import json
 import os
+import random
 import socket
 import sys
 import time
 from collections import OrderedDict
+from contextlib import contextmanager
 from urllib.parse import urlparse
 
 
@@ -69,6 +72,81 @@ def _ddg_refusing(seconds: float) -> str:
             "limit after a burst of searches; not a configuration problem). No search is "
             f"sent to it for {max(1, round(seconds / 60))} min, because searching during "
             "the block prolongs it.")
+
+
+# ---- DuckDuckGo's pacing, shared by every session on this machine ------------
+
+class DuckDuckGoPacing:
+    """When DuckDuckGo may be asked next, and how long it stays paused after a bot check.
+
+    The servers differ in how they ask: each one's DuckDuckGo class calls
+    _turn() before a request and _record_outcome() after it.
+    """
+
+    def __init__(self):
+        self.min_interval = _env_float("DDG_MIN_INTERVAL", 5.0)
+        self.jitter = max(0.0, _env_float("DDG_JITTER", 3.0))
+        self.base_cooldown = _env_float("DDG_COOLDOWN", 300.0)
+        self.max_cooldown = _env_float("DDG_MAX_COOLDOWN", 1800.0)
+        self.own_state = {}  # stands in for the shared file when it can't be opened
+
+    @contextmanager
+    def _state(self):
+        """The pacing state {"last", "until", "strikes"}, held exclusively.
+
+        DuckDuckGo limits the IP address, which every session's server on this
+        machine shares, so they share this too, through a file holding only times.
+        """
+        try:
+            fh = open(os.path.join(_state_dir(), "ddg-pacing.json"), "a+")
+        except OSError:  # no state folder: pace this process on its own
+            yield self.own_state
+            return
+        with fh:
+            fcntl.flock(fh, fcntl.LOCK_EX)
+            fh.seek(0)
+            try:
+                st = json.loads(fh.read() or "{}")
+            except ValueError:
+                st = {}
+            if not isinstance(st, dict):
+                st = {}
+            yield st
+            fh.truncate(0)
+            json.dump(st, fh)
+
+    def _turn(self):
+        """Wait for this machine's next turn to send a request; SearchBlocked while paused."""
+        with self._state() as st:
+            now = time.time()
+            left = st.get("until", 0) - now
+            if 0 < left <= self.max_cooldown:  # bounded: a clock set back can't stall search
+                raise SearchBlocked(_ddg_refusing(left))
+            # One gate for every request: bursts are what trigger the bot check.
+            # A fresh random gap each turn, so the requests don't land on a fixed beat.
+            gap = self.min_interval + random.uniform(0.0, self.jitter)
+            time.sleep(min(gap, max(0.0, st.get("last", 0) + gap - now)))
+            st["last"] = time.time()
+
+    def _record_outcome(self, blocked: bool, answered: bool):
+        """A bot check starts a pause, longer each time it is still there; an answer ends that.
+
+        What counts as either is the server's call: the requests server sees an
+        HTTP status, the lynx server only the page's text.
+        """
+        with self._state() as st:
+            if blocked:
+                st["strikes"] = min(st.get("strikes", 0) + 1, 16)
+                cool = min(self.base_cooldown * 2 ** (st["strikes"] - 1), self.max_cooldown)
+                st["until"] = time.time() + cool
+            elif answered:
+                st["strikes"] = 0
+        # Raised only once the state is written back: raised inside the `with`,
+        # it skipped the write, so the pause was never recorded.
+        if blocked:
+            log(f"duckduckgo served its bot check; pausing it for {cool:.0f}s "
+                f"(block #{st['strikes']} in a row)")
+            raise SearchBlocked(_ddg_refusing(cool))
 
 
 # ---- Brave's key, engine order, cache and the engine chain ---------------------

@@ -38,22 +38,16 @@ Other knobs (all optional):
 
 Protocol channel is stdout — all logging goes to stderr.
 """
-import fcntl
-import json
 import os
-import random
 import re
-import time
-from contextlib import contextmanager
 from urllib.parse import parse_qs, unquote, urljoin, urlparse
 
 import requests
 from bs4 import BeautifulSoup
 
 import search_common as common
-from search_common import (MAX_RESULTS, TEXT_TYPES, SearchBlocked, SearchSetupError, SearchUnavailable,
-                           _brave_key, _brave_key_file, _check_public, _ddg_refusing, _env_float,
-                           _state_dir, log)
+from search_common import (MAX_RESULTS, TEXT_TYPES, DuckDuckGoPacing, SearchSetupError, SearchUnavailable,
+                           _brave_key, _brave_key_file, _check_public, _env_float, log)
 
 UAS = [
     # The standard UA first: it is the default, kept instead of rotating
@@ -138,61 +132,19 @@ def parse_ddg_lite(html: str, k: int = MAX_RESULTS):
     return out[:k]
 
 
-class DuckDuckGo:
+class DuckDuckGo(DuckDuckGoPacing):
     URL = "https://lite.duckduckgo.com/lite/"
     BLOCK_MARKERS = ("anomaly-modal", "anomaly.js", 'id="challenge-form"',
                      "bots use duckduckgo too")
 
     def __init__(self):
+        super().__init__()
         self.session = requests.Session()  # keeps cookies and the connection
         self.session.headers.update({"User-Agent": _ua(),
                                      "Accept-Language": "en-US,en;q=0.9"})
-        self.min_interval = _env_float("DDG_MIN_INTERVAL", 5.0)
-        self.jitter = max(0.0, _env_float("DDG_JITTER", 3.0))
-        self.base_cooldown = _env_float("DDG_COOLDOWN", 300.0)
-        self.max_cooldown = _env_float("DDG_MAX_COOLDOWN", 1800.0)
-        self.own_state = {}  # stands in for the shared file when it can't be opened
-
-    @contextmanager
-    def _state(self):
-        """The pacing state {"last", "until", "strikes"}, held exclusively.
-
-        DuckDuckGo limits the IP address, which every session's server on this
-        machine shares, so they share this too, through a file holding only times.
-        """
-        try:
-            fh = open(os.path.join(_state_dir(), "ddg-pacing.json"), "a+")
-        except OSError:  # no state folder: pace this process on its own
-            yield self.own_state
-            return
-        with fh:
-            fcntl.flock(fh, fcntl.LOCK_EX)
-            fh.seek(0)
-            try:
-                st = json.loads(fh.read() or "{}")
-            except ValueError:
-                st = {}
-            if not isinstance(st, dict):
-                st = {}
-            yield st
-            fh.truncate(0)
-            json.dump(st, fh)
-
-    def _turn(self):
-        """Wait for this machine's next turn to send a request; SearchBlocked while paused."""
-        with self._state() as st:
-            now = time.time()
-            left = st.get("until", 0) - now
-            if 0 < left <= self.max_cooldown:  # bounded: a clock set back can't stall search
-                raise SearchBlocked(_ddg_refusing(left))
-            # One gate for every request: bursts are what trigger the bot check.
-            # A fresh random gap each turn, so the requests don't land on a fixed beat.
-            gap = self.min_interval + random.uniform(0.0, self.jitter)
-            time.sleep(min(gap, max(0.0, st.get("last", 0) + gap - now)))
-            st["last"] = time.time()
 
     def _record(self, r):
-        """A bot check starts a pause, longer each time it is still there; a result ends that."""
+        """A bot check starts a pause (DuckDuckGoPacing) and moves to the next User-Agent."""
         blocked = self._is_blocked(r)
         if blocked:
             # The session's header was set once, at start: it has to follow the
@@ -201,17 +153,7 @@ class DuckDuckGo:
             self.session.headers["User-Agent"] = _rotate_ua()
             log(f"UA {old!r} blocked by DuckDuckGo; next request uses "
                 f"{self.session.headers['User-Agent']!r}")
-        with self._state() as st:
-            if blocked:
-                st["strikes"] = min(st.get("strikes", 0) + 1, 16)
-                cool = min(self.base_cooldown * 2 ** (st["strikes"] - 1), self.max_cooldown)
-                st["until"] = time.time() + cool
-            elif r.status_code == 200:
-                st["strikes"] = 0
-        if blocked:
-            log(f"duckduckgo served its bot check; pausing it for {cool:.0f}s "
-                f"(block #{st['strikes']} in a row)")
-            raise SearchBlocked(_ddg_refusing(cool))
+        self._record_outcome(blocked, r.status_code == 200)
 
     def _is_blocked(self, r) -> bool:
         if "result-link" in r.text:
