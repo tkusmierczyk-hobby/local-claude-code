@@ -253,5 +253,15 @@ check "gpu: a discrete Intel Arc is chosen" $?
 check "gpu: an integrated GPU alone is left to llama.cpp" $?
 rm -f "$ROOT/llama/devices.txt" "$S"/device.*
 
+# ---- stop ----------------------------------------------------------------------
+printf '#!/usr/bin/env bash\nwhile :; do sleep 1; done\n' > "$ROOT/bin/ollama"; chmod +x "$ROOT/bin/ollama"
+"$ROOT/bin/ollama" serve & ours=$!
+"$ROOT/bin/ollama" serve & yours=$!
+echo "$ours" > "$S/ollama.pid"
+"$HERE/local-claude" stop >/dev/null 2>&1; sleep 0.3
+! kill -0 "$ours" 2>/dev/null && kill -0 "$yours" 2>/dev/null
+check "stop: only the ollama the launcher started is stopped, not one of yours" $?
+kill "$ours" "$yours" 2>/dev/null; wait "$ours" "$yours" 2>/dev/null
+
 echo "launcher: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

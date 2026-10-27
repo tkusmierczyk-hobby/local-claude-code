@@ -534,7 +534,13 @@ stop_llama() {
 # ---- `stop` ------------------------------------------------------------------
 if [[ "${1:-}" == "stop" ]]; then
   stop_llama && echo "llama-server stopped." || echo "llama-server not running."
-  if pkill -f "ollama serve" 2>/dev/null; then echo "ollama stopped."; fi
+  # Only the ollama this launcher started (LOCAL_BACKEND=ollama), by its PID and
+  # only while that PID is still an `ollama serve`: one of your own is not ours.
+  pid="$(cat "$STATE_DIR/ollama.pid" 2>/dev/null || true)"
+  if [[ "$pid" =~ ^[0-9]+$ ]] && ps -p "$pid" -o args= 2>/dev/null | grep -q "ollama serve" \
+     && kill "$pid" 2>/dev/null; then
+    echo "ollama stopped."
+  fi
   rm -f "$STATE_DIR/ollama.pid"
   exit 0
 fi
