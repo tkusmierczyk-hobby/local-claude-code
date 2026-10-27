@@ -187,10 +187,13 @@ with tempfile.TemporaryDirectory() as d:
     call("web_search", query="b")
     check("duckduckgo: waits its turn after another session's search", time.time() - t0 >= 0.45)
 
+    ua0 = ss.DDG.session.headers["User-Agent"]
     ddg.replies[:] = [BOT_CHECK]
     err, text = call("web_search", query="c")
     check("duckduckgo: a bot check is reported as not a configuration problem",
           err and "not a configuration problem" in text and "tell the user" not in text)
+    check("duckduckgo: after a bot check its requests use the next User-Agent",
+          ss.DDG.session.headers["User-Agent"] not in (ua0, None))
     n = len(ddg.sent)
     err, text = call("web_search", query="d")
     check("duckduckgo: nothing is sent during the pause after a bot check",

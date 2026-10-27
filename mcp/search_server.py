@@ -237,7 +237,12 @@ class DuckDuckGo:
         """A bot check starts a pause, longer each time it is still there; a result ends that."""
         blocked = self._is_blocked(r)
         if blocked:
-            log(f"UA {_ua()!r} blocked by DuckDuckGo; trying {_rotate_ua()!r}")
+            # The session's header was set once, at start: it has to follow the
+            # rotation itself, or DuckDuckGo keeps seeing the blocked one.
+            old = self.session.headers["User-Agent"]
+            self.session.headers["User-Agent"] = _rotate_ua()
+            log(f"UA {old!r} blocked by DuckDuckGo; next request uses "
+                f"{self.session.headers['User-Agent']!r}")
         with self._state() as st:
             if blocked:
                 st["strikes"] = min(st.get("strikes", 0) + 1, 16)
