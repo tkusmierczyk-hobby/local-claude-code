@@ -201,8 +201,10 @@ def _parse_ddg_dump(text: str, k: int = MAX_RESULTS) -> list:
 
 class DuckDuckGoLynx:
     URL = "https://lite.duckduckgo.com/lite/?q={q}"
-    BLOCK_MARKERS = ("bots use duckduckgo too", "anomaly-modal",
-                     'id="challenge-form"')
+    # Lynx renders text, so the bot check is recognised by its wording; its
+    # HTML (anomaly-modal, challenge-form) never reaches the dump.
+    BLOCK_MARKERS = ("bots use duckduckgo too",
+                     "confirm this search was made by a human")
 
     def __init__(self):
         self.min_interval = _env_float("DDG_MIN_INTERVAL", 5.0)
@@ -247,9 +249,15 @@ class DuckDuckGoLynx:
             time.sleep(min(gap, max(0.0, st.get("last", 0) + gap - now)))
             st["last"] = time.time()
 
-    def _record(self, text: str):
+    def _is_blocked(self, text: str, results) -> bool:
+        if results:
+            return False  # a results page, even for a query about "anomalies"
+        low = text.lower()
+        return any(m in low for m in self.BLOCK_MARKERS)
+
+    def _record(self, text: str, results):
         """Record success or block."""
-        blocked = "anomaly" in text.lower() or any(m in text for m in self.BLOCK_MARKERS)
+        blocked = self._is_blocked(text, results)
         with self._state() as st:
             if blocked:
                 st["strikes"] = min(st.get("strikes", 0) + 1, 16)
@@ -261,16 +269,16 @@ class DuckDuckGoLynx:
                     "DuckDuckGo is refusing automated searches from this machine "
                     f"for now. No search is sent to it for {max(1, round(cool / 60))} min."
                 )
-            if "result-link" in text or any(re.search(rf"^\s*\d+\.\s+", l) for l in text.split("\n")[:20]):
+            if results:
                 st["strikes"] = 0
 
     def search(self, query: str, k: int = MAX_RESULTS):
         self._turn()
         url = self.URL.format(q=urllib.parse.quote_plus(query))
-        raw = _run_lynx(url)
-        text = _tidy(raw)
-        self._record(text)
-        return _parse_ddg_dump(text, k)
+        text = _tidy(_run_lynx(url))
+        results = _parse_ddg_dump(text, k)
+        self._record(text, results)
+        return results
 
 
 # ---- Shared backend infrastructure (same as search_server.py) ----------------
