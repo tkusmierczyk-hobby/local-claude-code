@@ -22,24 +22,34 @@ TMP="$(mktemp)"; trap 'rm -f "$TMP"' EXIT
 cat > "$TMP" <<'PRELUDE'
 {#- local-claude: merge all system messages into one at the front. Claude Code
     sends a trailing system message and this model's template rejects that.
-    A namespace is required: plain `set` inside a for loop does not survive it. -#}
-{%- set lc = namespace(sys=[], rest=[]) %}
+    The merged content is a plain string: some templates add a string to it,
+    others read only the first part of a list. Texts are joined with nothing in
+    between, as Qwen's own template joins the parts of a list, so its prompt
+    is unchanged. A namespace is required: plain `set` inside a for loop does
+    not survive it. The last tag ends in `-%}` so that no newline from here
+    reaches the prompt, ahead of a template that starts by printing bos_token. -#}
+{%- set lc = namespace(sys="", has_sys=false, rest=[]) %}
 {%- for lc_m in messages %}
     {%- if lc_m.role == "system" %}
+        {%- set lc.has_sys = true %}
         {%- if lc_m.content is string %}
-            {%- set lc.sys = lc.sys + [{"type": "text", "text": lc_m.content}] %}
-        {%- else %}
-            {%- set lc.sys = lc.sys + lc_m.content %}
+            {%- set lc.sys = lc.sys ~ lc_m.content %}
+        {%- elif lc_m.content is not none %}
+            {%- for lc_p in lc_m.content %}
+                {%- if 'text' in lc_p %}
+                    {%- set lc.sys = lc.sys ~ lc_p.text %}
+                {%- endif %}
+            {%- endfor %}
         {%- endif %}
     {%- else %}
         {%- set lc.rest = lc.rest + [lc_m] %}
     {%- endif %}
 {%- endfor %}
-{%- if lc.sys | length > 0 %}
+{%- if lc.has_sys %}
     {%- set messages = [{"role": "system", "content": lc.sys}] + lc.rest %}
 {%- else %}
     {%- set messages = lc.rest %}
-{%- endif %}
+{%- endif -%}
 PRELUDE
 
 python3 "$HERE/patch-gguf.py" "$MODEL" --template >> "$TMP"
