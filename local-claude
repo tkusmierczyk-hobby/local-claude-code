@@ -575,6 +575,10 @@ if [[ "${1:-}" == "attempts" ]]; then
   [[ -x .claude/verify.sh ]] || { echo "attempts mode needs an executable .claude/verify.sh (acceptance test)"; exit 1; }
   git rev-parse --is-inside-work-tree >/dev/null 2>&1 || { echo "attempts mode needs a git repo (for safe revert)"; exit 1; }
   [[ -z "$(git status --porcelain)" ]] || { echo "attempts mode needs a clean working tree (commit or stash first)"; exit 1; }
+  HEAD0="$(git rev-parse -q --verify HEAD)" || { echo "attempts mode needs at least one commit to revert to"; exit 1; }
+  # The model can change verify.sh as well as the code, so every attempt is
+  # judged by the version there now, put back in place before each check.
+  VERIFY0="$(mktemp)"; cp -p .claude/verify.sh "$VERIFY0"; trap 'rm -f "$VERIFY0"' EXIT
   ATTEMPT_TIMEOUT="${ATTEMPT_TIMEOUT:-900}"
   TASK="$TASK
 Acceptance: the script .claude/verify.sh must exit 0 — read it first and make its checks pass."
@@ -583,12 +587,15 @@ Acceptance: the script .claude/verify.sh must exit 0 — read it first and make 
     t0=$(date +%s)
     timeout "$ATTEMPT_TIMEOUT" "$0" --dangerously-skip-permissions -p "$TASK" < /dev/null || true
     echo "[attempts] attempt $i took $(( $(date +%s) - t0 ))s; verifying..."
+    mkdir -p .claude && cp -p "$VERIFY0" .claude/verify.sh
     if bash .claude/verify.sh; then
-      echo "[attempts] PASS on attempt $i — changes kept. Review with: git diff"
+      echo "[attempts] PASS on attempt $i — changes kept. Review with: git diff $HEAD0"
       exit 0
     fi
     echo "[attempts] attempt $i failed verification — reverting"
-    git checkout -q -- . && git clean -qfd
+    # reset --hard rather than checkout: changes the model staged, and commits
+    # it made, have to go as well.
+    git reset -q --hard "$HEAD0" && git clean -qfd
   done
   echo "[attempts] all $N attempts failed verification; tree restored to clean state"
   exit 1
