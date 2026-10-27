@@ -3,9 +3,9 @@
 Run Claude Code against a model on your own machine. Same CLI, same tools,
 permissions, hooks and subagents — but inference happens locally, and nothing
 contacts Anthropic at runtime. The only outside traffic is web search when the
-model uses it: queries go to DuckDuckGo (and, if you give it a key, to
-Brave's Search API while DuckDuckGo refuses) and pages are fetched from the
-sites themselves (`LOCAL_SEARCH=0` turns that off).
+model uses it: queries go to the search engines you enable (DuckDuckGo, needing
+no setup, by default) and pages are fetched from the sites themselves — see
+[Web search](#web-search); `LOCAL_SEARCH=0` turns it off.
 
 The interesting part is what makes it usable: a 35-billion-parameter model on an
 8 GB graphics card, at a speed you can actually work with. That is not
@@ -135,6 +135,86 @@ local-claude pull unsloth/Qwen3.6-35B-A3B-GGUF mmproj-F16.gguf \
 
 Details and the VRAM trade-off: [docs/MODELS.md](docs/MODELS.md#vision).
 
+## Web search
+
+The model gets two tools, `web_search` and `web_fetch`, from a small search
+server that runs on your machine. Claude Code's own web tools are switched off:
+its WebFetch asks Anthropic about every domain before fetching, and its
+WebSearch runs on Anthropic's servers, so against a local model it returns
+nothing.
+
+**What leaves your machine:** each search goes to the engine that answers it,
+and each fetched page comes from its site. Nothing goes to Anthropic. The
+server's log records which tool ran, not the query or the URL
+(`LOCAL_SEARCH_LOG_QUERIES=1` logs those too).
+
+### Search engines
+
+Engines are tried in order, `SEARCH_BACKENDS` (default `ddg,searxng,brave`):
+
+- one you have not set up is skipped;
+- one that refuses for now (a bot check, a rate limit, an outage) passes the
+  query to the next;
+- one that is set up wrongly (a rejected key) stops the search with a message,
+  rather than the query silently going elsewhere.
+
+| Engine | Setup | Cost | Notes |
+|---|---|---|---|
+| DuckDuckGo | none | free | No API: the server reads its "lite" web page, best effort. Refuses bursts of searches — see [known issues](#known-issues) |
+| SearXNG | your own instance: set `SEARXNG_URL` and add `json` under `search.formats` in its `settings.yml` | free | A metasearch engine that queries Google, Bing and others for you. Its engines can be blocked too |
+| Brave Search API | an API key in `~/.local-claude/brave-search.key`, `chmod 600` | a card, and a monthly credit worth about 1,000 searches (October 2026) | Its own index, through an official API. A file rather than an environment variable, which every program you start, cloud sessions included, could read |
+
+`local-claude status` shows the order the engines will be tried in.
+`SEARCH_BACKENDS=ddg local-claude` leaves the others out for one session;
+`LOCAL_SEARCH=0` removes web access altogether.
+
+**Why not Google or Bing directly?** Neither offers a usable search API any
+more. Google's Custom Search JSON API is
+[closed to new customers and ends on 1 January 2027](https://developers.google.com/custom-search/v1/overview),
+and its whole-web search is for partners only. Microsoft
+[retired the Bing Search APIs in August 2025](https://learn.microsoft.com/en-us/lifecycle/announcements/bing-search-api-retirement);
+their replacement works only inside Azure's AI agents. Scraping either breaks
+their terms and runs into CAPTCHAs. For their results, use SearXNG.
+
+### Two search servers
+
+Both offer the same tools, engines, order and messages
+(`test/mcp_parity_test.py` checks this). They differ in how they reach
+DuckDuckGo and fetch pages:
+
+| | `requests` (default) | `lynx` |
+|---|---|---|
+| Needs | Python's `requests` and `beautifulsoup4` | the `lynx` text browser |
+| DuckDuckGo and fetched pages | Python, with a browser's User-Agent that changes after a bot check | `lynx`, so sites see an ordinary Lynx client |
+| Page size | `web_fetch` stops at `WEB_FETCH_MAX_BYTES` (2 MB) | reads pages whole; two requests per page, the first to check where it redirects |
+
+`LOCAL_SEARCH_BACKEND=lynx local-claude` uses the lynx server for one session;
+set it when running `./install.sh` to make it the default. Brave and SearXNG are
+plain API calls in both.
+
+### Known issues
+
+- **DuckDuckGo's bot check.** Since autumn 2026 DuckDuckGo answers a burst of
+  searches (others measured about nine in a row) with a bot check that covers
+  your whole IP address, and searching while it is up keeps it there. So the
+  server sends DuckDuckGo at most one search every 5–8 seconds and, after a bot
+  check, none for 5 minutes, doubling while the check persists, up to 30. All
+  sessions on the machine share this. Meanwhile searches go to SearXNG or Brave
+  if you set one up; otherwise web search is unavailable until the pause ends.
+  Don't test it by searching again and again.
+- **The model may retell that as a configuration problem.** The tool says the
+  bot check is *not* one; a configuration problem (a rejected Brave key, a
+  SearXNG without `json`) says so explicitly and asks the model to tell you.
+- **`web_fetch` reads text only.** There is no JavaScript, so pages built in the
+  browser come back nearly empty, and PDFs and other binary files are reported,
+  not read. Local and private addresses are refused, at every redirect
+  (`WEB_FETCH_ALLOW_PRIVATE=1` allows them).
+- **Repeated queries are answered from a cache** for 15 minutes in each session
+  (`SEARCH_CACHE_TTL`).
+
+Every search option is in [docs/TUNING.md](docs/TUNING.md); fixes are in
+[docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md#web-search-does-not-work).
+
 ## Tests
 
 ```bash
@@ -142,6 +222,7 @@ Details and the VRAM trade-off: [docs/MODELS.md](docs/MODELS.md#vision).
 ./test/api_compat_test.sh    # /v1/messages conformance against a running server
 ./test/e2e_agentic_test.sh   # the real agentic loop in a sandbox
 ./test/mcp_server_test.py    # MCP handshake for the web-search server
+./test/mcp_parity_test.py    # both web-search servers behave the same
 ./test/bench.sh --tune       # throughput + expert-split sweep
 ```
 
@@ -155,7 +236,7 @@ model. The stack compensates automatically rather than hoping:
 | Operating rules injected into the system prompt | `LOCAL_RULES=""` to disable |
 | Syntax errors fed straight back to the model | `hooks/syntax_check.sh` on Write/Edit |
 | Cannot declare "done" while `.claude/verify.sh` fails | `hooks/verify_on_stop.sh`, max 2 retries |
-| Web search and fetch through a local server; Claude Code's own web tools are off, since its fetch asks Anthropic about every domain and its search cannot work locally | A Brave Search API key in `~/.local-claude/brave-search.key`, used while DuckDuckGo refuses; `LOCAL_SEARCH=0` for no web access at all; `LOCAL_BUILTIN_WEBFETCH=1` allows the built-in fetch, with the Anthropic check skipped; `LOCAL_BUILTIN_WEBSEARCH=1` the built-in search |
+| Web search and fetch through a local server, with Claude Code's own web tools off — see [Web search](#web-search) | `LOCAL_SEARCH=0` for no web access at all; `LOCAL_BUILTIN_WEBFETCH=1` allows the built-in fetch, with the Anthropic check skipped; `LOCAL_BUILTIN_WEBSEARCH=1` the built-in search |
 | No background traffic to Anthropic, no feedback reports, no mirroring to claude.ai, remote control or messages from other sessions | `LOCAL_BACKGROUND_TRAFFIC=1`, `LOCAL_FEEDBACK=1`, `LOCAL_REMOTE=1`. Any Claude Code variable or `--settings` key you set yourself also wins over these defaults |
 | Your global `~/.claude/CLAUDE.md` is skipped: it is written for the cloud model and costs context | `LOCAL_GLOBAL_CLAUDE_MD=1` to load it anyway |
 | Instructions of your own for every local session, written for the local model | `~/.local-claude/CLAUDE.md`, if you create it |
@@ -181,6 +262,8 @@ model. The stack compensates automatically rather than hoping:
   features) are inactive. The agentic loop — files, bash, permissions, subagents,
   hooks, search — is fully local.
 - Claude Code prints `unrecognized_model` for any local model. Cosmetic.
+- Web search is best effort without setup: DuckDuckGo, the one engine that
+  needs none, pauses after a burst of searches. See [Web search](#web-search).
 - The default backend is Vulkan, because llama.cpp ships no Linux CUDA binary and
   Vulkan needs nothing installed. A source-built CUDA backend is ~20% faster on
   decode and ~50% on prefill — `./bin/build-cuda.sh --install-nvcc`, see

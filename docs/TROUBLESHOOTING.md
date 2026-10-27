@@ -120,7 +120,9 @@ from disk and throughput collapses. `local-claude status` shows both.
 
 ## Web search does not work
 
-It needs `requests` and `beautifulsoup4` for the python that `install.sh` found:
+The default search server needs `requests` and `beautifulsoup4` for the python
+that `install.sh` found; the lynx one (`LOCAL_SEARCH_BACKEND=lynx`) needs `lynx`
+on your `PATH` instead:
 
 ```bash
 python3 -m pip install requests beautifulsoup4
