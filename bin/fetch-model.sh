@@ -10,7 +10,9 @@
 #   file   file in that repo, e.g. Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf
 #   sha256 optional expected hash; verified once the size matches
 #
-# Env: MODELS_DIR (default ~/models), FETCH_LOG (default $MODELS_DIR/<file>.log)
+# Env: MODELS_DIR (default ~/models), FETCH_LOG (default $MODELS_DIR/<file>.log),
+#      HF_ENDPOINT (default https://huggingface.co: a mirror, or a test stand-in),
+#      FETCH_PAUSE (seconds between attempts, default 5)
 set -uo pipefail
 
 REPO="${1:?usage: fetch-model.sh <repo> <file> [sha256]}"
@@ -18,9 +20,11 @@ FILE="${2:?usage: fetch-model.sh <repo> <file> [sha256]}"
 WANT_SHA="${3:-}"
 
 MODELS_DIR="${MODELS_DIR:-$HOME/models}"
-URL="https://huggingface.co/${REPO}/resolve/main/${FILE}"
+HF="${HF_ENDPOINT:-https://huggingface.co}"; HF="${HF%/}"
+URL="${HF}/${REPO}/resolve/main/${FILE}"
 DEST="${MODELS_DIR}/${FILE}"
 PART="${DEST}.part"
+PAUSE="${FETCH_PAUSE:-5}"
 LOG="${FETCH_LOG:-${DEST}.log}"
 
 mkdir -p "$MODELS_DIR"
@@ -33,7 +37,7 @@ trap '[ -n "$CURL_PID" ] && kill "$CURL_PID" 2>/dev/null; exit 143' INT TERM
 echo "=== $(date -Is) fetch ${REPO}/${FILE} -> ${DEST} ==="
 
 # Expected size from the HF API, so we know when we are actually done.
-total="$(curl -sSL "https://huggingface.co/api/models/${REPO}/tree/main?recursive=1" \
+total="$(curl -sSL "${HF}/api/models/${REPO}/tree/main?recursive=1" \
   | python3 -c "
 import sys,json
 f=sys.argv[1]
@@ -61,13 +65,15 @@ while :; do
   # above is the retry: it re-stats the file each pass, so -C - always re-anchors
   # on real progress. --max-time is short for the same reason — it bounds how much
   # a single connection can redo. --speed-limit kills sockets that hang while open.
-  curl -sSL -C - -o "$PART" --connect-timeout 30 --max-time 1800 \
+  # -f keeps HTTP errors out of the file: without it, an error page answering the
+  # first request became the start of the .part, and every chunk landed after it.
+  curl -fsSL -C - -o "$PART" --connect-timeout 30 --max-time 1800 \
        --speed-limit 10000 --speed-time 60 \
        -w "  chunk: %{size_download} B @ %{speed_download} B/s\n" "$URL" &
   CURL_PID=$!
   wait "$CURL_PID"
   CURL_PID=""
-  sleep 5
+  sleep "$PAUSE"
 done
 
 echo "download complete: $(stat -c%s "$PART") bytes"

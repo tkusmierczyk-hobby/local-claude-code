@@ -7,6 +7,7 @@
 ./test/api_compat_test.sh    # the contract with Claude Code — run after any launcher change
 ./test/e2e_agentic_test.sh   # the real loop; slower, but it catches what the others miss
 ./test/mcp_server_test.py
+./test/fetch_model_test.sh  # the downloader against a local stand-in, offline
 bash -n local-claude install.sh bin/*.sh test/*.sh
 ```
 
