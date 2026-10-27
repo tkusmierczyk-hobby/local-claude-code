@@ -11,7 +11,7 @@ set -uo pipefail
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 MODELS_DIR="${MODELS_DIR:-$HOME/models}"
 MODEL="${1:-$MODELS_DIR/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf}"
-STATE_DIR="$HOME/.local-claude"
+STATE_DIR="${LOCAL_CLAUDE_STATE:-$HOME/.local-claude}"   # where the launcher keeps it too
 REPORT="$STATE_DIR/bench-results.txt"
 mkdir -p "$STATE_DIR"
 
@@ -52,9 +52,9 @@ sleep 3
 } | tee -a "$REPORT"
 
 echo "=== $(date -Is) starting server with the tuned split ==="
-LOCAL_MODEL_FILE="$MODEL" "$HERE/local-claude" status >/dev/null 2>&1 || true
-# `status` does not start the server; a throwaway print-mode run does.
-LOCAL_MODEL_FILE="$MODEL" timeout 900 "$HERE/local-claude" -p "Reply with the single word: ready" </dev/null >/dev/null 2>&1 || true
+# `start` brings the server up without a Claude Code session, so no throwaway
+# conversation lands in the local history.
+LOCAL_MODEL_FILE="$MODEL" "$HERE/local-claude" start >/dev/null 2>&1 || true
 
 {
   echo

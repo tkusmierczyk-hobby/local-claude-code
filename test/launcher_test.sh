@@ -317,5 +317,14 @@ check "hook: checking Python leaves no __pycache__ in the project" $?
 [ "$(hook "$H/tsconfig.json" LOCAL_CLAUDE=1)" = 0 ]
 check "hook: JSON with comments and trailing commas (tsconfig.json) passes" $?
 
+# ---- auto-tune -----------------------------------------------------------------
+rm -f "$ROOT/claude-args" "$S"/ncmoe* "$S"/ubatch*
+timeout 300 "$HERE/bin/auto-tune.sh" "$ROOT/models/Test-A3B.gguf" </dev/null >/dev/null 2>&1
+grep -q "^tuned:" "$S/bench-results.txt" 2>/dev/null && [ -s "$S/auto-tune.log" ] && [ -s "$S/ncmoe.llama" ]
+check "auto-tune: tunes, and keeps its report and log in LOCAL_CLAUDE_STATE" $?
+curl -sf "http://127.0.0.1:$LOCAL_PORT/health" >/dev/null && [ ! -e "$ROOT/claude-args" ]
+check "auto-tune: leaves the server running without starting a Claude Code session" $?
+stop_server; rm -f "$S"/ncmoe* "$S"/ubatch*
+
 echo "launcher: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
