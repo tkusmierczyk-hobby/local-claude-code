@@ -188,7 +188,10 @@ EOF
     TEST_CMD="TODO: fill in (e.g. python3 -m pytest -q)"
     { [[ -f pyproject.toml || -f pytest.ini || -d tests ]]; } && TEST_CMD="python3 -m pytest -q"
     EXTRA=""
-    [[ -f Makefile ]] && EXTRA="- Makefile targets: $(grep -oE '^[a-zA-Z0-9_-]+:' Makefile | tr -d ':' | head -6 | paste -sd' ' -)"$'\n'
+    # `|| true`: a Makefile with no plain targets made grep fail, and pipefail
+    # with set -e ended init silently, half done.
+    targets="$( { grep -oE '^[a-zA-Z0-9_-]+:' Makefile 2>/dev/null || true; } | tr -d ':' | head -6 | paste -sd' ' -)"
+    [[ -n "$targets" ]] && EXTRA="- Makefile targets: $targets"$'\n'
     [[ -f package.json ]] && EXTRA="${EXTRA}- Node project: see \"scripts\" in package.json"$'\n'
     cat > CLAUDE.md <<EOF
 # Project notes for the coding agent

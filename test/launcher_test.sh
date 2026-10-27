@@ -292,5 +292,14 @@ check "status: completes on a machine without nvidia-smi" $?
 LC_ALL=pl_PL.UTF-8 "$HERE/local-claude" status 2>/dev/null | grep -q '^ram: '
 check "locale: status reports RAM whatever the language" $?
 
+# ---- init ----------------------------------------------------------------------
+for mk in '.PHONY: all' 'build:'; do
+  I="$ROOT/init"; rm -rf "$I"; mkdir -p "$I"; printf '%s\n' "$mk" > "$I/Makefile"
+  (cd "$I" && "$HERE/local-claude" init >/dev/null 2>&1) && [ -s "$I/CLAUDE.md" ] && [ -f "$I/.claude/verify.sh.example" ]
+  check "init: scaffolds everything for a Makefile holding '$mk'" $?
+done
+grep -q "Makefile targets: build" "$I/CLAUDE.md"
+check "init: lists the Makefile's targets" $?
+
 echo "launcher: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
