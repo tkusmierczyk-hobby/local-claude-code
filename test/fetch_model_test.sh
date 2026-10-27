@@ -83,7 +83,7 @@ PORT="$(cat "$TMP/srv/port")"
 fetch() {
   rm -rf "$TMP/models" "$TMP/fetch.log"
   MODELS_DIR="$TMP/models" FETCH_LOG="$TMP/fetch.log" FETCH_PAUSE=0 \
-    HF_ENDPOINT="http://127.0.0.1:$PORT" timeout 60 "$HERE/bin/fetch-model.sh" test/repo "$@"
+    HF_ENDPOINT="http://127.0.0.1:$PORT" timeout 20 "$HERE/bin/fetch-model.sh" test/repo "$@"
   RC=$?
 }
 # queue <name>=<n>... — set the stand-in's failure counters, all others to 0
@@ -107,6 +107,22 @@ check "an error page answering the first request is not saved into the file" $?
 queue chunk=30000
 fetch model.gguf "$SHA"; same
 check "dropped connections resume where the file got to" $?
+
+queue api_fail=2
+fetch model.gguf "$SHA"; same
+check "a size lookup that fails twice is retried" $?
+
+# Without the size the download cannot tell it is complete; it must stop and
+# say so (exit 1), not loop until the timeout (exit 124).
+queue api_fail=1000
+fetch model.gguf "$SHA"
+[ "$RC" = 1 ] && grep -q "could not learn the size" "$TMP/fetch.log"
+check "a size it cannot learn stops the download with a message" $?
+
+queue
+fetch other.gguf
+[ "$RC" = 1 ] && grep -q "has no file other.gguf" "$TMP/fetch.log" && [ ! -e "$TMP/models/other.gguf.part" ]
+check "a file the repo does not have stops it at once" $?
 
 echo "fetch-model: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

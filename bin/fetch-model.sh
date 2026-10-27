@@ -36,16 +36,40 @@ CURL_PID=""
 trap '[ -n "$CURL_PID" ] && kill "$CURL_PID" 2>/dev/null; exit 143' INT TERM
 echo "=== $(date -Is) fetch ${REPO}/${FILE} -> ${DEST} ==="
 
-# Expected size from the HF API, so we know when we are actually done.
-total="$(curl -sSL "${HF}/api/models/${REPO}/tree/main?recursive=1" \
-  | python3 -c "
+# Expected size from the HF API: it is how the loop below knows the file is
+# complete, so without it the download cannot finish. A lookup that fails is
+# retried for a few minutes and then stops the script, rather than letting the
+# loop run blind: it used to re-request a file the repo did not have every few
+# seconds, forever. Prints the size, 0 when the repo lacks the file, or nothing.
+lookup_size() {
+  curl -fsSL --connect-timeout 30 --max-time 120 "${HF}/api/models/${REPO}/tree/main?recursive=1" \
+    | python3 -c "
 import sys,json
 f=sys.argv[1]
-for e in json.load(sys.stdin):
-    if e.get('path')==f: print(e.get('size',0)); break
+try: entries=json.load(sys.stdin)
+except ValueError: sys.exit()
+if not isinstance(entries, list): sys.exit()
+for e in entries:
+    if isinstance(e, dict) and e.get('path')==f: print(e.get('size',0)); break
 else: print(0)
-" "$FILE")"
-echo "expected size: ${total:-unknown} bytes"
+" "$FILE"
+}
+total=""
+for n in 1 2 3 4 5 6 7 8 9 10; do
+  total="$(lookup_size)"
+  [ -n "$total" ] && break
+  echo "size lookup failed (attempt $n of 10)"
+  [ "$n" -lt 10 ] && sleep $(( PAUSE * 6 ))
+done
+if [ -z "$total" ]; then
+  echo "could not learn the size of ${FILE} from ${HF}: offline, rate-limited, or the repo needs a login."
+  echo "Nothing more was downloaded; re-run the same pull to try again."
+  exit 1
+fi
+if [ "$total" = "0" ]; then
+  echo "${REPO} has no file ${FILE} (names are case-sensitive)."; exit 1
+fi
+echo "expected size: ${total} bytes"
 
 if [ -f "$DEST" ] && [ "$(stat -c%s "$DEST")" = "$total" ]; then
   echo "already complete: $DEST"; exit 0
