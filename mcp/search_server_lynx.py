@@ -72,11 +72,16 @@ def _state_dir() -> str:
 
 # ---- Lynx helpers -----------------------------------------------------------
 
-def _run_lynx(url: str, include_links: bool = True) -> str:
-    """Fetch a URL with lynx -dump and return the rendered text."""
+def _run_lynx(url: str, include_links: bool = True, *, follow: bool = True,
+              headers: bool = False) -> str:
+    """Fetch a URL with lynx -dump and return the rendered text.
+
+    follow=False leaves a redirect unfollowed; headers=True returns the
+    response's status line and headers, then its source, instead of the text.
+    """
     cmd = [
         LYNX,
-        "-dump",
+        "-mime_header" if headers else "-dump",
         f"-width={LYNX_WIDTH}",
         "-display_charset=utf-8",
         "-assume_charset=utf-8",
@@ -87,6 +92,8 @@ def _run_lynx(url: str, include_links: bool = True) -> str:
     ]
     if not include_links:
         cmd.append("-nolist")
+    if not follow:
+        cmd.append("-noredir")
     cmd.append(url)
 
     try:
@@ -475,12 +482,40 @@ def _check_public(url: str):
             raise ValueError(f"refusing to fetch {host}: it resolves to a non-public "
                              f"address ({ip}). Set WEB_FETCH_ALLOW_PRIVATE=1.")
 
+def _probe(url: str):
+    """One request, redirects unfollowed: (HTTP status or 0, lower-cased headers)."""
+    head = re.split(r"\r?\n\r?\n", _run_lynx(url, follow=False, headers=True), maxsplit=1)[0]
+    lines = head.splitlines()
+    m = re.match(r"HTTP/\S+\s+(\d{3})", lines[0] if lines else "")
+    hdrs = {}
+    for line in lines[1:]:
+        k, sep, v = line.partition(":")
+        if sep:
+            hdrs[k.strip().lower()] = v.strip()
+    return (int(m.group(1)) if m else 0), hdrs
+
+
 def web_fetch(url: str, max_chars: int = 6000) -> str:
     if not re.match(r"^https?://", url, re.I):
         url = "https://" + url
-    _check_public(url)
+    # lynx would follow a redirect on its own, past the public-address check, so
+    # each hop is requested unfollowed and its target checked before the next.
     try:
-        raw = _run_lynx(url)
+        for _ in range(6):
+            _check_public(url)
+            status, hdrs = _probe(url)
+            if status in (301, 302, 303, 307, 308) and hdrs.get("location"):
+                url = urljoin(url, hdrs["location"])
+                continue
+            break
+        else:
+            raise ValueError("too many redirects")
+        ctype = hdrs.get("content-type", "").lower()
+        if ctype and not any(t in ctype for t in TEXT_TYPES):
+            size = hdrs.get("content-length")
+            return (f"(not a text page: {ctype.split(';')[0].strip()}"
+                    f"{f', {size} bytes' if size else ''}; nothing extracted)")
+        raw = _run_lynx(url, follow=False)
     except RuntimeError as e:
         raise ValueError(f"fetch failed: {e}")
     text = _tidy(raw)

@@ -4,12 +4,15 @@
 The pages are local files, so nothing here contacts a search engine; lynx itself
 renders them, so the parser is checked against real lynx output.
 """
+import http.server
 import json
 import os
 import shutil
 import sys
 import tempfile
+import threading
 import time
+import urllib.parse
 
 if not shutil.which("lynx"):
     print("SKIP: lynx is not installed")
@@ -115,6 +118,55 @@ os.environ.update(SEARCH_BACKENDS="searxng,brave", SEARXNG_URL="http://127.0.0.1
 err, text = call("web_search", query="python")
 check("an unreachable SearXNG falls back to the next backend", not err and "(via brave)" in text)
 os.environ.update(SEARCH_BACKENDS="ddg")
+
+# web_fetch against a local site. Its /private/ paths stand in for addresses
+# the public-address check refuses (all of this site is local, so the real
+# check would refuse everything).
+asked = []
+
+
+class Site(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *a):
+        pass
+
+    def do_GET(self):
+        asked.append(self.path)
+        if self.path in ("/moved", "/go"):
+            self.send_response(302)
+            self.send_header("Location", "/private/admin" if self.path == "/moved" else "/page")
+            self.send_header("Content-Length", "0")
+            return self.end_headers()
+        body, ctype = b"<html><body><p>Hello from the page.</p></body></html>", "text/html"
+        if self.path.endswith(".pdf"):
+            body, ctype = b"%PDF-1.7 binary", "application/pdf"
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
+site = http.server.HTTPServer(("127.0.0.1", 0), Site)
+threading.Thread(target=site.serve_forever, daemon=True).start()
+SITE = f"http://127.0.0.1:{site.server_address[1]}"
+
+
+def check_public(url):
+    if urllib.parse.urlparse(url).path.startswith("/private/"):
+        raise ValueError("refusing to fetch it: it resolves to a non-public address")
+
+
+L._check_public = check_public
+L._run_lynx = real_run_lynx  # the real fetch, no longer the DuckDuckGo stand-in
+err, text = call("web_fetch", url=SITE + "/page")
+check("web_fetch reads a page", not err and "Hello from the page." in text)
+err, text = call("web_fetch", url=SITE + "/moved")
+check("web_fetch refuses a redirect to a non-public address, before requesting it",
+      err and "non-public" in text and "/private/admin" not in asked)
+err, text = call("web_fetch", url=SITE + "/go")
+check("web_fetch follows a redirect to a public address", not err and "Hello from the page." in text)
+err, text = call("web_fetch", url=SITE + "/paper.pdf")
+check("web_fetch does not render a binary file", not err and "not a text page: application/pdf" in text)
 
 shutil.rmtree(STATE)
 print(f"\n{'ALL PASSED' if fails == 0 else str(fails) + ' FAILED'}")
