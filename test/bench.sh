@@ -49,7 +49,7 @@ PORT="${LOCAL_PORT:-8080}"
 BASE="http://127.0.0.1:$PORT"
 mkdir -p "$STATE_DIR"
 
-MODEL=""; CTX="${LOCAL_CTX:-${HWENV_LOCAL_CTX:-131072}}"; SWEEP=""; TUNE=0
+MODEL=""; CTX="${LOCAL_CTX:-${HWENV_LOCAL_CTX:-131072}}"; SWEEP=""; TUNE=0; UB_GIVEN=0
 BASE_UB="${LOCAL_UBATCH:-${HWENV_LOCAL_UBATCH:-2048}}"; UBATCHES="$BASE_UB,$(( BASE_UB * 2 ))"
 MARGIN="${LOCAL_VRAM_MARGIN:-768}"
 while [[ $# -gt 0 ]]; do
@@ -58,7 +58,7 @@ while [[ $# -gt 0 ]]; do
     --sweep)  SWEEP="$2"; shift 2 ;;
     --model)  MODEL="$2"; shift 2 ;;
     --ctx)    CTX="$2"; shift 2 ;;
-    --ubatch) UBATCHES="$2"; shift 2 ;;
+    --ubatch) UBATCHES="$2"; UB_GIVEN=1; shift 2 ;;
     -h|--help) sed -n '2,33p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 1 ;;
   esac
@@ -78,7 +78,7 @@ LAYERS="${LAYERS:-40}"
 EXPERTS="$(python3 "$HERE/bin/patch-gguf.py" "$MODEL" --show 2>/dev/null \
           | awk -F= '/\.expert_count /{gsub(/ /,"",$2); print $2; exit}')"
 EXPERTS="${EXPERTS:-0}"
-[[ -z "$SWEEP" ]] && SWEEP="$LAYERS,$((LAYERS-2)),$((LAYERS-4)),$((LAYERS-6)),$((LAYERS-8))"
+[[ -z "$SWEEP" && "$TUNE" == "1" ]] && SWEEP="$LAYERS,$((LAYERS-2)),$((LAYERS-4)),$((LAYERS-6)),$((LAYERS-8))"
 [[ "$EXPERTS" == "0" ]] && { SWEEP="0"; TUNE=0; echo "note: dense model (no experts) — nothing to tune"; }
 
 echo "model:  $(basename "$MODEL")  ${LAYERS} layers, ${EXPERTS} experts"
@@ -109,16 +109,25 @@ PY
 }
 
 IFS=',' read -ra UBS <<< "$UBATCHES"
+# Without --tune, measure what the launcher runs: its tuned split and
+# micro-batch, or your LOCAL_NCMOE and LOCAL_UBATCH. An empty value leaves the
+# choice to the launcher; the row shows what it chose.
+[[ "$TUNE" == "0" && "$UB_GIVEN" == "0" ]] && UBS=("")
 row() { printf "%-10s %7s %10s %14s %13s %10s%s\n" "$@"; }
 row "n_cpu_moe" "ubatch" "prompt tok" "prefill t/s" "decode t/s" "VRAM" ""
 
-# try N UBATCH — start the real server with this split; sets ptok pp tg vram vfree.
+# try N UBATCH — start the real server with this split, an empty value leaving
+# it to the launcher; sets ptok pp tg vram vfree, and ran_n ran_ub to the
+# values the server got (the launcher's start line names its own choices).
 try() {
-  ptok="" pp="" tg="" vram="" vfree=""
+  ptok="" pp="" tg="" vram="" vfree="" ran_n="$1" ran_ub="$2"
   "$HERE/local-claude" stop >/dev/null 2>&1
   sleep 2
-  LOCAL_NCMOE="$1" LOCAL_UBATCH="$2" LOCAL_CTX="$CTX" LOCAL_MODEL_FILE="$MODEL" \
-    "$HERE/local-claude" start >/dev/null 2>&1 || return 1
+  local said
+  said="$(LOCAL_NCMOE="${1:-${LOCAL_NCMOE:-}}" LOCAL_UBATCH="${2:-${LOCAL_UBATCH:-}}" LOCAL_CTX="$CTX" \
+          LOCAL_MODEL_FILE="$MODEL" "$HERE/local-claude" start 2>&1 >/dev/null)" || return 1
+  [[ -n "$ran_n" ]] || ran_n="$(sed -n 's/.* ncmoe=\([^ ]*\).*/\1/p' <<< "$said" | tail -1)"
+  [[ -n "$ran_ub" ]] || ran_ub="$(sed -n 's/.* ubatch=\([^ ]*\).*/\1/p' <<< "$said" | tail -1)"
   read -r ptok pp tg <<< "$(measure)"
   local used total
   read -r used total <<< "$(nvidia-smi --query-gpu=memory.used,memory.total --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -d ',')"
@@ -130,25 +139,26 @@ tight() { [[ -n "$vfree" && "$vfree" -lt "$MARGIN" ]]; }
 
 best_n=""; best_tg=0; best_pp=0; best_ub="${UBS[0]}"
 IFS=',' read -ra VALUES <<< "$SWEEP"
+[[ ${#VALUES[@]} -gt 0 ]] || VALUES=("")
 for n in "${VALUES[@]}"; do
   [[ "$n" -lt 0 ]] && continue
   if ! try "$n" "${UBS[0]}"; then
-    row "$n" "${UBS[0]}" "-" "-" "-" "-" "  did not start (out of VRAM) — stopping sweep"
+    row "${ran_n:-auto}" "${ran_ub:-auto}" "-" "-" "-" "-" "  did not start (out of VRAM) — stopping sweep"
     break
   fi
   if [[ -z "${tg:-}" ]]; then
-    row "$n" "${UBS[0]}" "-" "-" "-" "-" "  request failed — stopping sweep"
+    row "${ran_n:-auto}" "${ran_ub:-auto}" "-" "-" "-" "-" "  request failed — stopping sweep"
     break
   fi
   if tight; then
-    row "$n" "${UBS[0]}" "$ptok" "$pp" "$tg" "$vram" "  only $vfree MiB free (< $MARGIN) — stopping sweep"
+    row "${ran_n:-auto}" "${ran_ub:-auto}" "$ptok" "$pp" "$tg" "$vram" "  only $vfree MiB free (< $MARGIN) — stopping sweep"
     break
   fi
   note=""
   if LC_ALL=C awk -v a="$tg" -v b="$best_tg" 'BEGIN{exit !(a>b)}'; then
     best_tg="$tg"; best_pp="$pp"; best_n="$n"; note="  <- best"
   fi
-  row "$n" "${UBS[0]}" "$ptok" "$pp" "$tg" "$vram" "$note"
+  row "${ran_n:-auto}" "${ran_ub:-auto}" "$ptok" "$pp" "$tg" "$vram" "$note"
   [[ "$TUNE" == "0" ]] && break   # single measurement unless sweeping
 done
 

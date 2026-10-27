@@ -198,5 +198,11 @@ rm -f "$S"/ncmoe*
 check "tuning: bench --tune stores the split for its build only" $?
 stop_server
 
+echo 37 > "$S/ncmoe.llama"; echo 4096 > "$S/ubatch.llama"
+row="$("$HERE/local-claude" bench 2>/dev/null | grep -E '^[0-9]' | head -1)"
+[ "$(arg_after --n-cpu-moe) $(arg_after --ubatch-size)" = "37 4096" ] && [[ "$row" == "37 "*" 4096 "* ]]
+check "bench: without --tune it measures the split the launcher runs" $? || echo "          got: $row"
+stop_server; rm -f "$S"/ncmoe* "$S"/ubatch*
+
 echo "launcher: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
