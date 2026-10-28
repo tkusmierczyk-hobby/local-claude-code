@@ -228,13 +228,13 @@ keep nothing of the conversation at all.
 | What | Where | What it holds | To keep none |
 |---|---|---|---|
 | Session history: transcripts (`/resume`), prompt history (up arrow), auto-memory, file snapshots (`/rewind`) | `~/.local-claude/claude` | your conversations, in full | `LOCAL_STORAGE=none` |
-| Claude Code's housekeeping | the same folder: `.claude.json` and its backups | install IDs, start times, plugin counters and, from interactive sessions, which project folders you trusted | — (nothing of the conversation) |
+| Claude Code's housekeeping | the same folder: `.claude.json` and its backups | install IDs, start times, plugin counters and, from interactive sessions, which project folders you trusted | Can't be turned off: Claude Code writes it whenever it starts. Nothing of the conversation is in it |
 | Claude Code's log of its connection to the search server | `~/.cache/claude-cli-nodejs/<project>/mcp-logs-search/` (Linux path) | connection events, the search server's start-up and error lines; never queries | `LOCAL_SEARCH=0`: Claude Code has no switch for this log |
 | Server log | `~/.local-claude/llama-server.log` | timings and token counts of each request; no prompts | `LOCAL_SERVER_LOG=0`, when the server starts; the default under `LOCAL_STORAGE=none` |
 | Search log | `~/.local-claude/search-mcp.log` | the time and tool of each call; queries and URLs too with `LOCAL_SEARCH_LOG_QUERIES=1` | `LOCAL_STORAGE=none` |
-| DuckDuckGo pacing | `~/.local-claude/ddg-pacing.json` | times of the last search and of any pause | — (every session needs it to pace searches) |
+| DuckDuckGo pacing | `~/.local-claude/ddg-pacing.json` | times of the last search and of any pause | Not written with `LOCAL_SEARCH=0`, or when `SEARCH_BACKENDS` leaves DuckDuckGo out. Otherwise kept: every session reads it to space out its searches |
 | Prompt cache | the server's memory | recent conversations, so the next turn starts faster | gone when the server stops |
-| Settings, tuning and downloads | `~/.local-claude/`, `~/models/*.log` | configuration, measurements, download progress | — |
+| Settings, tuning and downloads | `~/.local-claude/`, `~/models/*.log` | configuration, measurements, download progress | Kept: the launcher needs them to run. Download logs can be deleted once a download has finished |
 
 Two cautions. `LOCAL_LLAMA_ARGS=--verbose` makes the server write every prompt and
 reply to its log in full; it is for debugging, on a test port
@@ -250,8 +250,8 @@ global `~/.claude/CLAUDE.md` (`LOCAL_GLOBAL_CLAUDE_MD=1` loads it).
 | Anthropic | never, at runtime | nothing. Switched off: telemetry, error reports, update and installation checks, the plugin marketplace Claude Code fetches on a first run, feedback reports (they would send the transcript), session mirroring to claude.ai, remote control, messages from other sessions, and Claude Code's own web tools (its WebFetch asks Anthropic about every domain; its WebSearch runs on Anthropic's servers) | already off. To allow them again: `LOCAL_BACKGROUND_TRAFFIC=1`, `LOCAL_FEEDBACK=1`, `LOCAL_REMOTE=1`, `LOCAL_BUILTIN_WEBFETCH=1` (its domain check stays skipped), `LOCAL_BUILTIN_WEBSEARCH=1` |
 | A search engine: DuckDuckGo, your SearXNG (which passes it on to its engines), or Brave | when the model searches | the query, from your IP address; Brave also gets your API key, so it knows the account | `LOCAL_SEARCH=0`; `SEARCH_BACKENDS` chooses engines ([Web search](#web-search)) |
 | Websites | when the model uses `web_fetch` | a request for the page, from your IP address | `LOCAL_SEARCH=0`. Local and private addresses are refused unless `WEB_FETCH_ALLOW_PRIVATE=1` |
-| Hugging Face | `local-claude pull` | which file you download | — |
-| GitHub | `./install.sh`, `./bin/build-cuda.sh` | requests for llama.cpp's releases (and conda-forge with `--install-nvcc`) | — |
+| Hugging Face | `local-claude pull` | which file you download | Only when you run it |
+| GitHub | `./install.sh`, `./bin/build-cuda.sh` | requests for llama.cpp's releases (and conda-forge with `--install-nvcc`) | Only when you run them; re-running `./install.sh` reuses the installed build without contacting GitHub |
 
 The model server itself listens on this machine only (`127.0.0.1`). `LOCAL_HOST`
 opens it to the network; set `LOCAL_API_KEY` then.
