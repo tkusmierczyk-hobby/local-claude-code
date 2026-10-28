@@ -74,7 +74,7 @@ setsid nohup bin/auto-tune.sh </dev/null >/dev/null 2>&1 &   # tunes when it fin
 A download that is running but averaging far below its instantaneous rate is the
 signature of wasted re-transfers — check the log for repeated timeouts quoting the
 same `out of <N> bytes` remaining total. `bin/fetch-model.sh` avoids the cause by
-never passing curl `--retry`; see CLAUDE.md.
+never passing curl `--retry`; the comment there says why.
 
 `local-claude models` marks a `.part` file **STALLED** when no fetcher process is
 running for it, and prints the command to resume — expect to need that at least

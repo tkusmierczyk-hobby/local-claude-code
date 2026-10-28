@@ -34,7 +34,7 @@ Two things came free with the move:
 | Tuning | none | `local-claude bench --tune` sweeps `--n-cpu-moe` against the real server |
 
 New files: `bin/fetch-model.sh`, `bin/pull-after.sh`, `bin/auto-tune.sh`,
-`bin/patch-gguf.py`, `docs/MOE-OFFLOAD.md`, `docs/MODELS.md`, `CLAUDE.md`.
+`bin/patch-gguf.py`, `docs/MOE-OFFLOAD.md`, `docs/MODELS.md`.
 Rewritten: `local-claude`, `test/bench.sh`, `test/api_compat_test.sh`.
 Unchanged: `hooks/`, `mcp/`, `test/mcp_server_test.py`, `test/e2e_agentic_test.sh`
 (retargeted only).

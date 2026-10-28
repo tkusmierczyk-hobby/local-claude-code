@@ -52,7 +52,7 @@ esac
 # interrupted run neither leaves a truncated file that looks complete nor starts
 # over. A FILE already present is checked the same way: older installers could
 # leave a truncated one. No curl --retry: with -C - it resumes from a stale
-# offset and re-downloads the same bytes (CLAUDE.md); this loop is the retry,
+# offset and re-downloads the same bytes (bin/fetch-model.sh); this loop is the retry,
 # and --speed-limit gives up on a connection that stalls while still open.
 fetch() {
   local url="$1" file="$2" size="$3" sha="$4" part="$2.part" have n=0

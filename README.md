@@ -277,8 +277,8 @@ history), `rm -f ~/.local-claude/*.log`, and the local projects' folders in
   and checks that under `LOCAL_STORAGE=none` nothing from the conversation is left
   anywhere. Last run with Claude Code 2.1.311; it does not cover the up-arrow
   history of interactive sessions.
-- **What a session connects to:** [CLAUDE.md](CLAUDE.md) describes the network
-  trace that shows it.
+- **What a session connects to:** a network trace, described in
+  [CONTRIBUTING.md](CONTRIBUTING.md#after-a-claude-code-update).
 - Claude Code is updated separately and can change either, so re-run both after
   an update. Only Linux is tested.
 
@@ -320,7 +320,6 @@ model. The stack compensates automatically rather than hoping:
 | [docs/MOE-OFFLOAD.md](docs/MOE-OFFLOAD.md) | why this works — the arithmetic |
 | [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | when it doesn't |
 | [docs/DESIGN-NOTES.md](docs/DESIGN-NOTES.md) | what was tried and rejected |
-| [CLAUDE.md](CLAUDE.md) | notes for agents working on this repo |
 
 ## Limitations
 

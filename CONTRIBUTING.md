@@ -49,8 +49,14 @@ licenses. By submitting a contribution, you agree that it is licensed under the
 AGPL-3.0 and that the maintainer may also license it to others under different
 terms, including commercial ones.
 
-## Notes for agents
+## After a Claude Code update
 
-[CLAUDE.md](CLAUDE.md) carries the invariants and the accumulated gotchas —
-read it before changing the launcher or the download path. Several of those
-entries cost hours to learn.
+Claude Code is updated separately, and what keeps local sessions local rests on
+its own variables and settings, which can change. After an update:
+
+- Trace the connections a session makes: `strace -f -qq -e trace=connect` on an
+  interactive and a print-mode (`-p`) session, each in a fresh
+  `LOCAL_CLAUDE_CONFIG_DIR` (a first run in a new folder behaves differently).
+  The only outside addresses should be the search engines, when used.
+- Run `./test/storage_test.sh` (it needs a running server): under
+  `LOCAL_STORAGE=none`, nothing from the conversation may be left on disk.
