@@ -218,12 +218,46 @@ Every search option is in [docs/TUNING.md](docs/TUNING.md); fixes are in
 
 ## Privacy
 
-The model runs on your machine, and nothing goes to Anthropic at runtime. What
-leaves the machine is the web search you allow and the downloads you start.
-Local sessions keep their data apart from your cloud Claude Code sessions, or
-keep nothing of the conversation at all.
+### For comparison: what plain Claude Code keeps
 
-### What is kept on your machine
+This is plain Claude Code, the `claude` command working with Anthropic's
+models; local-claude sessions do not write here (see the next part). It stores
+its sessions in plain text under `~/.claude`
+([Anthropic's description](https://code.claude.com/docs/en/claude-directory#application-data)):
+
+- **Transcripts** of every session, in `~/.claude/projects/<project>/`: your
+  messages and the model's, every tool call and its result (the contents of
+  files the model read, command output, pasted text), and the instructions
+  sent with them. A secret the model happens to read, a `.env` file say, ends
+  up there too. Kept 30 days by default (`cleanupPeriodDays`), for `/resume`
+  and `--continue`.
+- **Prompt history**, `~/.claude/history.jsonl`: everything you typed, with the
+  project folder, for the up arrow. Kept until you delete it.
+- **File snapshots**, `~/.claude/file-history/`: files as they were before the
+  model changed them, for `/rewind`. Kept 30 days.
+- **Auto-memory**, `~/.claude/projects/<project>/memory/`: notes the model
+  writes to itself for later sessions. Kept until you delete them.
+- Smaller things: plans, large pastes, task lists, usage totals, and
+  `~/.claude.json`, with your account details and, per project, whether you
+  trusted it and which MCP servers it uses.
+
+None of it is encrypted; file permissions are the only protection. And the
+conversation itself, everything in those transcripts, is sent to Anthropic (or
+your cloud provider), because that is where the model runs
+([how Anthropic handles it](https://code.claude.com/docs/en/data-usage)).
+
+### What local-claude changes
+
+The model runs on your machine, so the conversation is not sent anywhere, and
+nothing goes to Anthropic at runtime. Local sessions never write to
+`~/.claude` or `~/.claude.json`: they write the same kinds of files to a folder
+of their own, `~/.local-claude/claude`, where your plain Claude Code sessions
+do not read them, and Claude Code's 30-day cleanup applies there too. With
+`LOCAL_STORAGE=none` they keep nothing of the conversation; only
+`LOCAL_STORAGE=shared` puts them in `~/.claude`. What leaves the machine is the
+web search you allow and the downloads you start. The details:
+
+### What a local session keeps on your machine
 
 | What | Where | What it holds | To keep none |
 |---|---|---|---|
