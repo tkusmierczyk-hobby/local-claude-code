@@ -9,3 +9,6 @@ mcp/search.json
 *.part
 __pycache__/
 *.pyc
+
+# Notes for coding agents, kept out of the repository
+/CLAUDE.md
