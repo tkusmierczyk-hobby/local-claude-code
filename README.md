@@ -264,10 +264,26 @@ LOCAL_STORAGE=none LOCAL_SEARCH=0 local-claude
 ```
 
 No transcript, history, memory or log is kept, and nothing leaves the machine;
-the only files a session writes are Claude Code's housekeeping. To delete what
-earlier sessions kept: `rm -rf ~/.local-claude/claude` (all local session
-history), `rm -f ~/.local-claude/*.log`, and the local projects' folders in
-`~/.cache/claude-cli-nodejs/`, which also holds those of cloud sessions.
+the only files a session writes are Claude Code's housekeeping.
+
+**What this costs.** The session itself works as usual: the model reads and
+writes files and runs commands (`test/storage_test.sh` runs real sessions this
+way). What goes is everything that relies on something being kept:
+
+- `/resume` and `local-claude --continue` find nothing to resume;
+- the up arrow does not bring back prompts from earlier sessions;
+- `/rewind` cannot put back files the model changed, so keep your work in git;
+- auto-memory is off, so nothing the model learned carries over to the next
+  session (your `CLAUDE.md` files still load);
+- a server that dies mid-session leaves no log to tell why; start it with
+  `LOCAL_SERVER_LOG=1` to investigate (a failed start still shows its reason).
+
+`LOCAL_SEARCH=0` also takes away web access: the model answers from what it
+knows and from your files.
+
+To delete what earlier sessions kept: `rm -rf ~/.local-claude/claude` (all local
+session history), `rm -f ~/.local-claude/*.log`, and the local projects' folders
+in `~/.cache/claude-cli-nodejs/`, which also holds those of cloud sessions.
 
 ### How this is checked
 
