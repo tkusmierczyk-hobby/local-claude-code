@@ -78,14 +78,24 @@ if [ -n "${FAKE_MAX_UBATCH:-}" ] && [ "$ub" -gt "$FAKE_MAX_UBATCH" ]; then
   exit 1
 fi
 trap 'kill $child 2>/dev/null; exit 0' TERM INT
+# FAKE_IGNORE_TERM=1: shrug off SIGTERM, so that only SIGKILL stops it
+[ -n "${FAKE_IGNORE_TERM:-}" ] && trap '' TERM
 # FAKE_SLOW_START=N: take N seconds to load, as a large model does from disk
 if [ -n "${FAKE_SLOW_START:-}" ]; then sleep "$FAKE_SLOW_START" & child=$!; wait "$child"; fi
+# SIGUSR1: end as llama.cpp does on a CUDA error, with its message and SIGABRT's status
+trap 'echo "CUDA error: out of memory" >&2; kill $child 2>/dev/null; exit 134' USR1
 python3 "$D/server.py" "$port" "$ctx" & child=$!
 wait "$child"
 EOF
 cat > "$ROOT/llama/server.py" <<'EOF'
-import http.server, json, sys
+import http.server, json, os, sys, threading, time
 port, ctx = int(sys.argv[1]), int(sys.argv[2])
+# Go with the llama-server script, even when it is killed with SIGKILL.
+def orphaned(parent=os.getppid()):
+    while os.getppid() == parent:
+        time.sleep(0.1)
+    os._exit(0)
+threading.Thread(target=orphaned, daemon=True).start()
 class H(http.server.BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
@@ -368,6 +378,113 @@ for mode in separate none; do
   stop_server; rm -f "$S"/llama-server*.log
 done
 rm -f "$S/ubatch.llama"
+
+# ---- restart after a crash -------------------------------------------------------
+PIDF="$S/llama.$LOCAL_PORT.pid" WATCHF="$S/llama.$LOCAL_PORT.watch" SLOG="$S/llama-server.$LOCAL_PORT.log"
+watcher_pid() { cut -d' ' -f1 "$WATCHF"; }
+# restarted OLD_PID — a server other than OLD_PID comes up within 15 s
+restarted() {
+  local new
+  for _ in $(seq 1 150); do
+    new="$(cat "$PIDF" 2>/dev/null)"
+    [ -n "$new" ] && [ "$new" != "$1" ] && up "$LOCAL_PORT" && return 0
+    sleep 0.1
+  done
+  return 1
+}
+# settled WATCHER — that watcher has finished restarting the server, within 15 s
+settled() { for _ in $(seq 1 150); do kill -0 "$1" 2>/dev/null || return 0; sleep 0.1; done; return 1; }
+# stays_down — no server comes back (a restart would be up within ~4 s)
+stays_down() { sleep 5; ! up "$LOCAL_PORT"; }
+"$HERE/local-claude" stop >/dev/null 2>&1; rm -f "$S"/llama-server*.log
+
+timeout 20 bash -c 'out="$("$1" start 2>&1)"' _ "$HERE/local-claude"
+check "restart: the watcher leaves a caller's \$(...) free to return" $?
+old="$(cat "$PIDF")"; kill -KILL "$old"
+restarted "$old" && grep -q "SIGKILL.*Restarting" "$SLOG"
+check "restart: a server killed with SIGKILL, as when RAM runs out, is started again" $?
+old="$(cat "$PIDF")"; kill "$old"
+stays_down
+check "restart: a server stopped with a plain kill stays stopped" $?
+
+echo 4096 > "$S/ubatch.llama"
+"$HERE/local-claude" start >/dev/null 2>&1; old="$(cat "$PIDF")"; kill -USR1 "$old"
+restarted "$old" && [ "$(arg_after --ubatch-size)" = 2048 ] && grep -q "GPU ran out of memory" "$SLOG"
+check "restart: after the GPU ran out of memory, at --ubatch-size 2048 instead of the tuned 4096" $?
+watcher="$(watcher_pid)"; "$HERE/local-claude" stop >/dev/null 2>&1
+stays_down && ! kill -0 "$watcher" 2>/dev/null
+check "restart: local-claude stop ends the watcher too" $?
+ln -sf "$HERE/local-claude" "$ROOT/bin/lc"
+FAKE_IGNORE_TERM=1 "$ROOT/bin/lc" start >/dev/null 2>&1; watcher="$(watcher_pid)"
+LOCAL_STOP_TIMEOUT=2 "$ROOT/bin/lc" stop >/dev/null 2>&1
+stays_down && ! kill -0 "$watcher" 2>/dev/null
+check "restart: stop ends the watcher under any launcher name, even when the server needs SIGKILL" $?
+"$HERE/local-claude" stop >/dev/null 2>&1
+rm -f "$S"/llama-server*.log
+LOCAL_STORAGE=none "$HERE/local-claude" start >/dev/null 2>&1; old="$(cat "$PIDF")"; kill -USR1 "$old"
+restarted "$old" && [ "$(arg_after --ubatch-size)" = 2048 ] && sleep 1 && [ "$(logs)" = 0 ] \
+  && grep -q "GPU ran out of memory" "$S/llama.$LOCAL_PORT.crash"
+check "restart: under LOCAL_STORAGE=none it still reads why, and leaves no log behind" $?
+"$HERE/local-claude" stop >/dev/null 2>&1; rm -f "$S/ubatch.llama"
+
+LOCAL_RESTART=1 "$HERE/local-claude" start >/dev/null 2>&1; old="$(cat "$PIDF")" watcher="$(watcher_pid)"
+kill -KILL "$old"
+restarted "$old" && settled "$watcher" && kill -KILL "$(cat "$PIDF")" && stays_down && grep -q "Not restarted: crash 2 in 10 minutes" "$SLOG"
+check "restart: LOCAL_RESTART caps the restarts, so a server that keeps crashing stays down" $? \
+  || grep -a '^\[local-claude\]' "$SLOG" | tail -3 | sed 's/^/          /'
+LOCAL_RESTART=0 "$HERE/local-claude" start >/dev/null 2>&1; kill -KILL "$(cat "$PIDF")"
+stays_down && grep -q "Not restarted (LOCAL_RESTART=0)" "$SLOG"
+check "restart: LOCAL_RESTART=0 never restarts" $?
+grep -q "^last crash: .*LOCAL_RESTART=0" <<< "$("$HERE/local-claude" status 2>/dev/null)"
+check "restart: status shows the latest crash" $?
+
+# statusline_cmd [env...] — the status line command a session gets; the session
+# starts the server if it is down
+statusline_cmd() {
+  rm -f "$ROOT/claude-args"
+  env "$@" "$HERE/local-claude" -p hi </dev/null >/dev/null 2>&1
+  grep -A1 -x -- --settings "$ROOT/claude-args" | tail -1 \
+    | python3 -c 'import json,sys; print(json.load(sys.stdin).get("statusLine",{}).get("command",""))'
+}
+# settings [args...] — the --settings a session gets, as one JSON line
+settings() {
+  rm -f "$ROOT/claude-args"
+  "$HERE/local-claude" -p hi "$@" </dev/null >/dev/null 2>&1
+  grep -A1 -x -- --settings "$ROOT/claude-args" | tail -1
+}
+# has JSON PYTHON-EXPRESSION — the expression holds for the settings s
+has() { python3 -c 'import json,sys; s=json.loads(sys.argv[1]); sys.exit(0 if eval(sys.argv[2]) else 1)' "$1" "$2"; }
+has "$(settings --settings '{"theme": "light", "skipWebFetchPreflight": false}')" \
+  's["theme"] == "light" and s["skipWebFetchPreflight"] is False and s["autoUploadSessions"] is False and len(s["claudeMdExcludes"]) == 1 and "statusLine" in s'
+check "settings: your --settings are merged with the launcher's, yours winning key by key" $?
+echo '{"claudeMdExcludes": ["/elsewhere/CLAUDE.md"], "statusLine": {"type": "command", "command": "echo mine"}}' > "$ROOT/mine.json"
+has "$(settings --settings "$ROOT/mine.json" --settings='{"theme": "dark"}')" \
+  'len(s["claudeMdExcludes"]) == 2 and s["statusLine"]["command"] == "echo mine" and s["theme"] == "dark"'
+check "settings: --settings files and --settings= work too, several at once" $?
+# age FILE MINUTES — set the file's time that many minutes back
+age() { python3 -c 'import os,sys,time; t=time.time()-60*float(sys.argv[2]); os.utime(sys.argv[1],(t,t))' "$1" "$2"; }
+NOTE="$S/llama.$LOCAL_PORT.crash"
+SL="$(statusline_cmd)"
+[ -n "$SL" ] && [ -z "$(sh -c "$SL")" ]
+check "status line: a crash before the latest start is not shown" $?
+watcher="$(watcher_pid)" old="$(cat "$PIDF")"; kill -KILL "$old"
+restarted "$old" && settled "$watcher" \
+  && [[ "$(sh -c "$SL")" == [0-9][0-9]:[0-9][0-9]:[0-9][0-9]" llama-server stopped: it was killed (SIGKILL)"*". Restarted." ]]
+check "status line: after a restart, sessions show when and why the server crashed, and that it is back" $? \
+  || sed 's/^/          /' "$NOTE"
+age "$PIDF" 20; age "$NOTE" 5; shown="$(sh -c "$SL")"; age "$NOTE" 11
+[ -n "$shown" ] && [ -z "$(sh -c "$SL")" ]
+check "status line: the crash is shown for 10 minutes" $?
+[ -z "$(statusline_cmd LOCAL_NOTIFY=0)" ]
+check "status line: LOCAL_NOTIFY=0 leaves it out" $?
+[ "$(statusline_cmd LOCAL_STORAGE=none)" = "$SL" ]
+check "status line: LOCAL_STORAGE=none keeps it, as it shows no part of the conversation" $?
+mkdir -p "$ROOT/config"; [ -f "$ROOT/config/settings.json" ] && cp "$ROOT/config/settings.json" "$ROOT/settings.bak"
+echo '{"statusLine": {"type": "command", "command": "echo mine"}}' > "$ROOT/config/settings.json"
+[ -z "$(statusline_cmd)" ]
+check "status line: a status line of your own wins" $?
+rm -f "$ROOT/config/settings.json"; [ -f "$ROOT/settings.bak" ] && mv "$ROOT/settings.bak" "$ROOT/config/settings.json"
+"$HERE/local-claude" stop >/dev/null 2>&1
 
 echo "launcher: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

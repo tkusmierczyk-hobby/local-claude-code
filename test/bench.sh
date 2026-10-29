@@ -123,9 +123,12 @@ try() {
   ptok="" pp="" tg="" vram="" vfree="" ran_n="$1" ran_ub="$2"
   "$HERE/local-claude" stop >/dev/null 2>&1
   sleep 2
-  local said
+  local said restart="${LOCAL_RESTART:-3}"
+  # A candidate that crashes under --tune has failed; restarting it would only
+  # bring it back, at another micro-batch, for the next try to stop.
+  [[ "$TUNE" == 1 ]] && restart=0
   said="$(LOCAL_NCMOE="${1:-${LOCAL_NCMOE:-}}" LOCAL_UBATCH="${2:-${LOCAL_UBATCH:-}}" LOCAL_CTX="$CTX" \
-          LOCAL_MODEL_FILE="$MODEL" "$HERE/local-claude" start 2>&1 >/dev/null)" || return 1
+          LOCAL_RESTART="$restart" LOCAL_MODEL_FILE="$MODEL" "$HERE/local-claude" start 2>&1 >/dev/null)" || return 1
   [[ -n "$ran_n" ]] || ran_n="$(sed -n 's/.* ncmoe=\([^ ]*\).*/\1/p' <<< "$said" | tail -1)"
   [[ -n "$ran_ub" ]] || ran_ub="$(sed -n 's/.* ubatch=\([^ ]*\).*/\1/p' <<< "$said" | tail -1)"
   read -r ptok pp tg <<< "$(measure)"

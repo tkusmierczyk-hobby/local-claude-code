@@ -53,6 +53,8 @@
 #                                      separate (~/.local-claude/claude), none, shared (~/.claude)
 #   LOCAL_SERVER_LOG=0|1               keep llama-server's log (at server start; default 1,
 #                                      0 under LOCAL_STORAGE=none)
+#   LOCAL_RESTART=3                    restarts of a crashed server per 10 minutes; 0 = never
+#   LOCAL_NOTIFY=0                     no status line in sessions when the server crashes
 #   LOCAL_BACKGROUND_TRAFFIC=1 / LOCAL_FEEDBACK=1 / LOCAL_REMOTE=1
 #                                      allow background traffic / feedback reports /
 #                                      mirroring, remote control, cross-session messages
@@ -95,6 +97,8 @@ mkdir -p "$STATE_DIR"
 # original names, which a server started by an older launcher still has.
 PORT_TAG=""; [[ "$LOCAL_PORT" != 8080 ]] && PORT_TAG=".$LOCAL_PORT"
 PID_FILE="$STATE_DIR/llama$PORT_TAG.pid"
+WATCH_FILE="$STATE_DIR/llama$PORT_TAG.watch"   # the watcher that restarts a crashed server
+CRASH_NOTE="$STATE_DIR/llama$PORT_TAG.crash"   # its latest news, for status and the sessions' status line
 MODEL_STATE="$STATE_DIR/model$PORT_TAG"
 SERVER_LOG="$STATE_DIR/llama-server$PORT_TAG.log"
 # Whether a server started now keeps its log: LOCAL_SERVER_LOG, by default not
@@ -381,6 +385,74 @@ model_expert_count() {
     | awk -F= '/\.expert_count /{gsub(/ /,"",$2); print $2; exit}' | grep -E '^[0-9]+$' || echo 0
 }
 
+# A server that crashes mid-session is started again. The watcher is the
+# server's parent, so it learns how the server ended: killed by a signal it did
+# not ask for (SIGKILL when the kernel runs out of RAM, SIGABRT on a CUDA error,
+# a segfault) means a crash. A plain exit, or SIGHUP, SIGINT or SIGTERM (`local-claude
+# stop`, Ctrl+C, a plain kill), means stopped on purpose. Open sessions carry on:
+# Claude Code retries a failed request, and the new server answers "Loading
+# model" until it is ready. LOCAL_RESTART caps restarts per 10 minutes (0 =
+# never), so a server that keeps crashing stays down instead of looping.
+
+# tell_user MESSAGE — the watcher has no terminal, so its news goes to a note
+# that status and the sessions' status line show, and to the server log, if kept.
+tell_user() {
+  local note; note="$(date '+%F %T') $1"
+  echo "$note" > "$CRASH_NOTE"
+  keep_server_log && echo "[local-claude] $note" >> "$SERVER_LOG"
+  return 0
+}
+
+# watch_llama MODEL UBATCH LOG COMMAND... — run the server, wait for it to end,
+# and restart it if it crashed after start_llama saw it come up (SIGUSR1).
+watch_llama() {
+  local model="$1" ubatch="$2" log="$3" pid status sig why now t kept="" recent=0
+  local limit="${LOCAL_RESTART:-3}"; [[ "$limit" =~ ^[0-9]+$ ]] || limit=3
+  shift 3
+  WATCHED_UP=0; trap 'WATCHED_UP=1' USR1
+  : >>"$log"; exec 3<"$log"       # still readable once a log kept nowhere is deleted
+  "$@" >>"$log" 2>&1 3<&- &
+  pid=$!; echo "$pid" > "$PID_FILE"
+  while :; do                     # the signal cuts a wait short: wait again
+    wait "$pid"; status=$?
+    kill -0 "$pid" 2>/dev/null || break
+  done
+  sig=$(( status > 128 ? status - 128 : 0 ))
+  # A server that never came up is start_llama's to report.
+  [[ "$WATCHED_UP" == 1 && ! "$sig" =~ ^(0|1|2|15)$ ]] || return 0
+  case "$sig" in
+    9)  why="it was killed (SIGKILL), most likely by the kernel because RAM ran out" ;;
+    6)  if tail -n 50 <&3 | grep -qiE 'out of memory|failed to allocate'; then
+          why="the GPU ran out of memory"
+        else
+          why="llama.cpp aborted on an error"
+        fi ;;
+    11) why="it crashed (segmentation fault)" ;;
+    *)  why="it was killed by signal $sig" ;;
+  esac
+  now="$(date +%s)"
+  for t in ${LLAMA_RESTARTS:-}; do
+    (( now - t < 600 )) && { kept+=" $t"; recent=$(( recent + 1 )); }
+  done
+  if (( recent >= limit )); then
+    tell_user "llama-server stopped: $why. $( (( limit == 0 )) && echo "Not restarted (LOCAL_RESTART=0)." \
+      || echo "Not restarted: crash $(( recent + 1 )) in 10 minutes (LOCAL_RESTART=$limit).") Start it with: local-claude start"
+    return 0
+  fi
+  LLAMA_RESTARTS="$kept $now"     # a global: the next watcher is forked from this one
+  # Out of VRAM at a tuned micro-batch above 2048: restart at 2048, as a start
+  # that does not fit does, and keep it for later restarts.
+  [[ "$why" == "the GPU ran out of memory" && -z "${LOCAL_UBATCH:-}" && "$ubatch" -gt 2048 ]] \
+    && RESTART_UBATCH=2048
+  tell_user "llama-server stopped: $why. Restarting it${RESTART_UBATCH:+ with --ubatch-size $RESTART_UBATCH}; open sessions retry on their own."
+  sleep 2                         # the driver frees the dead server's VRAM
+  if start_llama "$model" ${RESTART_UBATCH:-}; then
+    echo "$(date '+%F %T') llama-server stopped: $why. Restarted${RESTART_UBATCH:+ with --ubatch-size $RESTART_UBATCH}." > "$CRASH_NOTE"
+  else
+    tell_user "llama-server could not be restarted. Start it with: local-claude start"
+  fi
+}
+
 # start_llama MODEL [UBATCH] — the second argument is only used for the retry below.
 start_llama() {
   local model="$1"
@@ -498,13 +570,22 @@ start_llama() {
   log_lines="$(wc -l 2>/dev/null < "$log" || echo 0)"
   # No key: make sure an empty LLAMA_API_KEY cannot reach the server either.
   local keyenv=(-u LLAMA_API_KEY); [[ -n "$API_KEY" ]] && keyenv=(LLAMA_API_KEY="$API_KEY")
-  env "${keyenv[@]}" LD_LIBRARY_PATH="$LLAMA_DIR" nohup "$LLAMA_DIR/llama-server" "${args[@]}" \
-    >>"$log" 2>&1 &
-  echo $! > "$PID_FILE"
+  # The server runs under a watcher (watch_llama), its parent. The watcher holds
+  # no terminal, where it would write over Claude Code's screen, and no caller's
+  # $(...) pipe, which would then never close.
+  rm -f "$PID_FILE"
+  (
+    set +e; trap '' HUP           # outlives the terminal, as the server does
+    watch_llama "$model" "$ubatch" "$log" \
+      env "${keyenv[@]}" LD_LIBRARY_PATH="$LLAMA_DIR" nohup "$LLAMA_DIR/llama-server" "${args[@]}"
+  ) </dev/null >/dev/null 2>&1 &
+  local watcher=$!
+  echo "$watcher $(ps -p "$watcher" -o lstart= 2>/dev/null)" > "$WATCH_FILE"
+  for _ in $(seq 1 100); do [[ -s "$PID_FILE" ]] && break; sleep 0.05; done
   echo "$model" > "$MODEL_STATE"
   # A 22 GB model reads from disk on first load; be patient before giving up.
   for _ in $(seq 1 "${LOCAL_START_TIMEOUT:-600}"); do
-    llama_up && { keep_server_log || rm -f "$log"; return 0; }
+    llama_up && { kill -USR1 "$watcher" 2>/dev/null || true; keep_server_log || rm -f "$log"; return 0; }
     kill -0 "$(cat "$PID_FILE")" 2>/dev/null || break
     sleep 1
   done
@@ -536,7 +617,15 @@ start_llama() {
 }
 
 stop_llama() {
-  local stopped=1 pid pids=()
+  local stopped=1 pid pids=() rec
+  # The watcher first, or it would start the server again. Its PID is recorded
+  # with its start time, which tells it from a process that got the PID since.
+  rec="$(cat "$WATCH_FILE" 2>/dev/null || true)"; pid="${rec%% *}"
+  if [[ "$pid" =~ ^[0-9]+$ && "$rec" != "$pid " \
+        && "$rec" == "$pid $(ps -p "$pid" -o lstart= 2>/dev/null)" ]]; then
+    kill "$pid" 2>/dev/null || true
+  fi
+  rm -f "$WATCH_FILE"
   pid="$(cat "$PID_FILE" 2>/dev/null || true)"
   # The recorded PID, but only while it is still a llama-server: PIDs get reused.
   if [[ "$pid" =~ ^[0-9]+$ ]] && ps -p "$pid" -o args= 2>/dev/null | grep -q llama-server; then
@@ -605,6 +694,8 @@ if [[ "${1:-}" == "status" ]]; then
     echo "server:   down"
     echo "model:    $(pick_model 2>/dev/null || echo 'none found — run: local-claude pull ...')"
   fi
+  # The watcher's latest note on a crash (see watch_llama).
+  [[ -s "$CRASH_NOTE" ]] && echo "last crash: $(cat "$CRASH_NOTE")"
   echo "n-cpu-moe: ${LOCAL_NCMOE:-$(default_ncmoe "$(pick_model 2>/dev/null)")}$(tuned_ncmoe >/dev/null && echo ' (tuned)' || echo ' (default — run: local-claude bench --tune)')"
   echo "device:   ${LOCAL_DEVICE:-$(detect_device)}"
   echo "ubatch:   ${LOCAL_UBATCH:-$(default_ubatch)}$([[ -s "$(ubatch_cache)" ]] && echo ' (tuned)')"
@@ -931,8 +1022,12 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 set -- "${ARGS[@]}"
+# The status line shows the watcher's note on a crash for 10 minutes, unless a
+# later start of the server (a newer PID file) has made it old news.
+NOTE_ARGS=("" "")
+[[ "$LOCAL_BACKEND" == llamacpp && "${LOCAL_NOTIFY:-1}" != 0 ]] && NOTE_ARGS=("$CRASH_NOTE" "$PID_FILE")
 SETTINGS="$(LOCAL_REMOTE="${LOCAL_REMOTE:-0}" python3 -c '
-import json, os, sys
+import json, os, shlex, sys
 s = {"skipWebFetchPreflight": True}        # see the web tools above
 if os.environ["LOCAL_REMOTE"] != "1":
     s.update(autoUploadSessions=False,     # no mirroring to claude.ai
@@ -940,6 +1035,10 @@ if os.environ["LOCAL_REMOTE"] != "1":
              crossSessionInbound="refuse") # other sessions cannot message in
 if sys.argv[1]:
     s["claudeMdExcludes"] = [sys.argv[1]]
+if sys.argv[2]:
+    s["statusLine"] = {"type": "command", "refreshInterval": 5,
+                       "command": "find %s -mmin -10 -newer %s -exec cut -d\" \" -f2- {} + 2>/dev/null"
+                                  % (shlex.quote(sys.argv[2]), shlex.quote(sys.argv[3]))}
 cfg = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
 for f in (os.path.join(cfg, "settings.json"), ".claude/settings.json", ".claude/settings.local.json"):
     try:
@@ -951,7 +1050,7 @@ for f in (os.path.join(cfg, "settings.json"), ".claude/settings.json", ".claude/
             s[k] = s.get(k, []) + [p for p in v if p not in s.get(k, [])]
         elif k in s:
             del s[k]                      # the file decides
-for src in sys.argv[2:]:
+for src in sys.argv[4:]:
     try:
         u = json.loads(src) if src.lstrip().startswith("{") else json.load(open(os.path.expanduser(src)))
     except (OSError, ValueError) as e:
@@ -961,7 +1060,7 @@ for src in sys.argv[2:]:
             s[k] = s.get(k, []) + [p for p in v if p not in s.get(k, [])]
         else:
             s[k] = v
-print(json.dumps(s))' "$EXCLUDE" "${USER_SETTINGS[@]}")"
+print(json.dumps(s))' "$EXCLUDE" "${NOTE_ARGS[@]}" "${USER_SETTINGS[@]}")"
 EXTRA_ARGS+=(--settings "$SETTINGS")
 
 exec claude --model "$LOCAL_MODEL" "${EXTRA_ARGS[@]}" "$@"

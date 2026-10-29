@@ -18,10 +18,17 @@ neighbour, such as an idle PyTorch process, is enough to push out a tuned 4096
 micro-batch; the launcher then prints `retrying at 2048` and starts anyway, with
 slower prefill.
 
-**It started, then died mid-session.** (A server started under `LOCAL_STORAGE=none` keeps
-no log: start it with `LOCAL_SERVER_LOG=1` to see one.) If `~/.local-claude/llama-server.log` ends
-with `CUDA error: out of memory` (often in `cudaGraphInstantiate`), the split left
-too little VRAM for what the server allocates while running. Re-run
+**It started, then died mid-session.** The launcher starts it again by itself, up
+to `LOCAL_RESTART` times in 10 minutes, and says why on the status line at the
+bottom of open sessions, in the server log and on the `last crash:` line of
+`local-claude status`. Open sessions retry meanwhile and carry on: on the reference
+machine the server was back within 5 s, and sessions killed during a request and in
+the middle of an answer both finished their task (in print mode, `-p`, and once
+interactively). If a session still stops with an API error, type `continue`.
+(A server started under `LOCAL_STORAGE=none` keeps no log: start it with
+`LOCAL_SERVER_LOG=1` to see one.) If `~/.local-claude/llama-server.log` ends with
+`CUDA error: out of memory` (often in `cudaGraphInstantiate`), the split left too
+little VRAM for what the server allocates while running. Re-run
 `local-claude bench --tune`, which keeps a reserve (`LOCAL_VRAM_MARGIN`, 768 MiB);
 raise the reserve if it happens again. `GGML_CUDA_DISABLE_GRAPHS=1 local-claude`
 also avoids it, at about 4% of decode speed.
