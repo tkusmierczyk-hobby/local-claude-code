@@ -116,9 +116,12 @@ Three things worth knowing:
   encoded once per message rather than per token — so the GPU is the wrong place
   for it on a card this size. `LOCAL_MMPROJ_DEVICE=gpu` overrides that if you
   have headroom.
-- **Images cost context.** Each one becomes hundreds to thousands of tokens.
-  `--image-min-tokens` / `--image-max-tokens` bound that; pass them through
-  `LOCAL_LLAMA_ARGS` if you need to.
+- **Every image becomes 1024 tokens** of context, and takes ~20–25 s to encode
+  on the CPU here. With fewer, the model misread large text in a small image
+  (llama.cpp warns about this for Qwen's vision models); with more, a 1080p
+  screenshot (~2040 tokens) crashed llama.cpp b10988 with a CUDA illegal memory
+  access at `--ubatch-size 2048`, while 1536 still worked. To change it, pass
+  `--image-min-tokens` / `--image-max-tokens` in `LOCAL_LLAMA_ARGS`.
 - **F16 is the one to take.** BF16 is the same size with no advantage here, and
   F32 doubles the file for precision the vision tower does not need.
 

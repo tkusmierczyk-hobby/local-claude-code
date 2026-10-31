@@ -554,6 +554,12 @@ start_llama() {
     # competing for. An image is encoded once per message, not per token, so the
     # CPU is the cheaper place for it unless you have headroom to spare.
     [[ "${LOCAL_MMPROJ_DEVICE:-cpu}" == "cpu" ]] && args+=(--no-mmproj-offload)
+    # Every image becomes 1024 tokens. With fewer, Qwen3.6 misread large text in a
+    # small image (llama.cpp itself warns below 1024); with more, a 1080p
+    # screenshot (~2040 tokens) made build b10988 abort with a CUDA illegal memory
+    # access at --ubatch-size 2048, while 1536 still worked. LOCAL_LLAMA_ARGS
+    # comes later, so its own --image-min-tokens/--image-max-tokens win.
+    llama_supports --image-max-tokens && args+=(--image-min-tokens 1024 --image-max-tokens 1024)
     VISION_NOTE=" +vision($(basename "$mmproj"))"
   fi
   # LOCAL_LOAD_MODE=none loads the RAM-resident experts into pinned memory

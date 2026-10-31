@@ -131,6 +131,7 @@ or a running server is reused unchanged.
 | `LOCAL_MODEL_FILE` | best in `~/models` | Pick a model explicitly |
 | `LOCAL_MMPROJ` | the one `mmproj*.gguf` in `~/models` | Vision projector: a path, or a file name in `~/models`. Without one, images fail, and a start says so; `0` means text only, without that warning. When the server starts; see MODELS.md |
 | `LOCAL_MMPROJ_DEVICE` | `cpu` | `gpu` offloads the vision tower, costing ~1 GB of VRAM the experts want |
+| image tokens | 1024 per image | Fewer misread text, more crashed the server; see MODELS.md, Vision. `LOCAL_LLAMA_ARGS="--image-min-tokens N --image-max-tokens N"` overrides. When the server starts |
 | `LOCAL_DEVICE` | autodetected | Force a GPU; never the integrated one |
 | `LOCAL_TEMPLATE` | auto-patched | `0` uses the model's stock chat template; a path uses that file as it is, never regenerated — see DESIGN-NOTES |
 | `LOCAL_SEARCH` | 1 | `0` drops the web-search MCP server, leaving no web access at all: Claude Code's own web tools are off by default |

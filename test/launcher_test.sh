@@ -54,7 +54,8 @@ printf '%s\n' "$@" > "$ROOT/claude-args"
 exit 0
 EOF
 
-printf '%s\n' "--cpu-strict <0|1>" "-lm, --load-mode MODE" "-ncmoe, --n-cpu-moe N" > "$ROOT/llama/help.txt"
+printf '%s\n' "--cpu-strict <0|1>" "-lm, --load-mode MODE" "-ncmoe, --n-cpu-moe N" "--image-min-tokens N" \
+       "--image-max-tokens N" > "$ROOT/llama/help.txt"
 cat > "$ROOT/llama/llama-server" <<'EOF'
 #!/usr/bin/env bash
 # llama-server: --help and --list-devices from files next to it; otherwise
@@ -216,6 +217,8 @@ out="$("$HERE/local-claude" start 2>&1 >/dev/null)"
 [ "$(arg_after --mmproj)" = "$ROOT/models/mmproj-test.gguf" ] && grep -qx -- --no-mmproj-offload "$ROOT/llama/last-args" \
   && grep -q "+vision(mmproj-test.gguf)" <<<"$out" && grep -qx "vision:   on" <<<"$("$HERE/local-claude" status 2>/dev/null)"
 check "vision: the one projector in the models folder is loaded, on the CPU" $?
+[ "$(arg_after --image-min-tokens)" = 1024 ] && [ "$(arg_after --image-max-tokens)" = 1024 ]
+check "vision: every image becomes 1024 tokens" $?
 stop_server
 touch "$ROOT/models/mmproj-other.gguf"
 out="$("$HERE/local-claude" start 2>&1 >/dev/null)"
