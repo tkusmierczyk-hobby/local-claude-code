@@ -56,6 +56,14 @@ local-claude stop && local-claude start
 `LOCAL_TEMPLATE=0` reverts to the stock template, which will fail again — it is
 for diagnosis, not a fix. Background in [DESIGN-NOTES.md](DESIGN-NOTES.md).
 
+## Requests with an image fail
+
+A pasted screenshot or a `Read` of an image file ends in an API error, while text
+works: the server runs without the model's vision part, a separate `mmproj` file.
+`local-claude status` says why on its `vision:` line. Usually it is not
+downloaded yet ([MODELS.md](MODELS.md#vision) has the command), or the server
+was started before it was; then `local-claude stop`, when no session is open.
+
 ## Replies are empty, or contain only reasoning
 
 Thinking models spend the output budget on reasoning first. If `max_tokens` is

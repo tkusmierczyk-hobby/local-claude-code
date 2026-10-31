@@ -129,7 +129,7 @@ or a running server is reused unchanged.
 | `LOCAL_PIN` | 1 | `0` leaves threads unpinned |
 | `LOCAL_THINKING` | 1 | `0` disables chain-of-thought — much faster turns, worse reasoning |
 | `LOCAL_MODEL_FILE` | best in `~/models` | Pick a model explicitly |
-| `LOCAL_MMPROJ` | auto-detected | Vision projector; see MODELS.md |
+| `LOCAL_MMPROJ` | the one `mmproj*.gguf` in `~/models` | Vision projector: a path, or a file name in `~/models`. Without one, images fail, and a start says so; `0` means text only, without that warning. When the server starts; see MODELS.md |
 | `LOCAL_MMPROJ_DEVICE` | `cpu` | `gpu` offloads the vision tower, costing ~1 GB of VRAM the experts want |
 | `LOCAL_DEVICE` | autodetected | Force a GPU; never the integrated one |
 | `LOCAL_TEMPLATE` | auto-patched | `0` uses the model's stock chat template; a path uses that file as it is, never regenerated — see DESIGN-NOTES |

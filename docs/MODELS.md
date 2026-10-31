@@ -101,9 +101,13 @@ local-claude pull unsloth/Qwen3.6-35B-A3B-GGUF mmproj-F16.gguf \
 ```
 
 0.90 GB. Once it is in `~/models`, the launcher finds it automatically — there is
-nothing to configure. `local-claude status` and the startup line show `+vision`
-when it is active. With more than one mmproj present the launcher cannot tell
-which model each belongs to, so set `LOCAL_MMPROJ` explicitly.
+nothing to configure, but a server that is already running needs a restart
+(`local-claude stop` when no session is open). The startup line ends in
+`+vision(mmproj-F16.gguf)` when it is loaded, and `local-claude status` has a
+`vision:` line. Without it, the server rejects every request that holds an
+image, so a start without one warns. With more than one mmproj present the
+launcher cannot tell which model each belongs to, so set `LOCAL_MMPROJ`
+explicitly.
 
 Three things worth knowing:
 
@@ -118,8 +122,8 @@ Three things worth knowing:
 - **F16 is the one to take.** BF16 is the same size with no advantage here, and
   F32 doubles the file for precision the vision tower does not need.
 
-If you would rather stay text-only, simply do not download it — or move it out of
-`~/models`.
+If you would rather stay text-only, do not download it, and set `LOCAL_MMPROJ=0`
+to drop the warning.
 
 ## Switching models
 

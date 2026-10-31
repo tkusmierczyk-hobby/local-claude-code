@@ -66,10 +66,10 @@ case "${1:-}" in
   --version) echo "version: 0 (stand-in)"; exit 0 ;;
 esac
 printf '%s\n' "$@" > "$D/last-args"
-port=""; ctx=0; ub=0; prev=""
+port=""; ctx=0; ub=0; vision=0; prev=""
 for a in "$@"; do
   [ "$prev" = --port ] && port="$a"; [ "$prev" = --ctx-size ] && ctx="$a"
-  [ "$prev" = --ubatch-size ] && ub="$a"; prev="$a"
+  [ "$prev" = --ubatch-size ] && ub="$a"; [ "$a" = --mmproj ] && vision=1; prev="$a"
 done
 # FAKE_MAX_UBATCH=N: fail as a start that runs out of VRAM does, above that micro-batch
 if [ -n "${FAKE_MAX_UBATCH:-}" ] && [ "$ub" -gt "$FAKE_MAX_UBATCH" ]; then
@@ -84,12 +84,12 @@ trap 'kill $child 2>/dev/null; exit 0' TERM INT
 if [ -n "${FAKE_SLOW_START:-}" ]; then sleep "$FAKE_SLOW_START" & child=$!; wait "$child"; fi
 # SIGUSR1: end as llama.cpp does on a CUDA error, with its message and SIGABRT's status
 trap 'echo "CUDA error: out of memory" >&2; kill $child 2>/dev/null; exit 134' USR1
-python3 "$D/server.py" "$port" "$ctx" & child=$!
+python3 "$D/server.py" "$port" "$ctx" "$vision" & child=$!
 wait "$child"
 EOF
 cat > "$ROOT/llama/server.py" <<'EOF'
 import http.server, json, os, sys, threading, time
-port, ctx = int(sys.argv[1]), int(sys.argv[2])
+port, ctx, vision = int(sys.argv[1]), int(sys.argv[2]), sys.argv[3] == "1"
 # Go with the llama-server script, even when it is killed with SIGKILL.
 def orphaned(parent=os.getppid()):
     while os.getppid() == parent:
@@ -110,7 +110,8 @@ class H(http.server.BaseHTTPRequestHandler):
         if self.path == "/health":
             return self.reply({"status": "ok"})
         if self.path == "/props":
-            return self.reply({"default_generation_settings": {"n_ctx": ctx}, "model_path": "stand-in"})
+            return self.reply({"default_generation_settings": {"n_ctx": ctx}, "model_path": "stand-in",
+                               "modalities": {"vision": vision}})
         self.send_error(404)
     def do_POST(self):
         self.rfile.read(int(self.headers.get("Content-Length", 0)))
@@ -198,6 +199,39 @@ echo stale > "$TPL"; touch -d 2001-01-01 "$TPL"   # newer than the model, older 
 grep -q "merge all system messages" "$TPL" && [ "$(arg_after --chat-template-file)" = "$TPL" ]
 check "template: the cached copy is rebuilt when make-template.sh is newer" $?
 stop_server
+
+# ---- vision --------------------------------------------------------------------
+# Without a projector the server rejects every image, and Claude Code shows only
+# an API error, so the start and status say so.
+out="$("$HERE/local-claude" start 2>&1 >/dev/null)"
+grep -q "vision off (no mmproj\*.gguf in $ROOT/models): requests with an image will fail" <<<"$out" \
+  && ! grep -qx -- --mmproj "$ROOT/llama/last-args" \
+  && grep -q "^vision:   off (no mmproj" <<<"$("$HERE/local-claude" status 2>/dev/null)"
+check "vision: without a projector, start and status say images will fail" $? || echo "$out" | sed 's/^/          /'
+touch "$ROOT/models/mmproj-test.gguf"
+grep -q "^vision:   off — mmproj-test.gguf is there now; restart the server" <<<"$("$HERE/local-claude" status 2>/dev/null)"
+check "vision: status says a projector downloaded since the start needs a restart" $?
+stop_server
+out="$("$HERE/local-claude" start 2>&1 >/dev/null)"
+[ "$(arg_after --mmproj)" = "$ROOT/models/mmproj-test.gguf" ] && grep -qx -- --no-mmproj-offload "$ROOT/llama/last-args" \
+  && grep -q "+vision(mmproj-test.gguf)" <<<"$out" && grep -qx "vision:   on" <<<"$("$HERE/local-claude" status 2>/dev/null)"
+check "vision: the one projector in the models folder is loaded, on the CPU" $?
+stop_server
+touch "$ROOT/models/mmproj-other.gguf"
+out="$("$HERE/local-claude" start 2>&1 >/dev/null)"
+grep -q "vision off (several mmproj files" <<<"$out" && ! grep -qx -- --mmproj "$ROOT/llama/last-args"
+check "vision: with several projectors, none is guessed" $?
+stop_server
+LOCAL_MMPROJ=mmproj-other.gguf "$HERE/local-claude" start >/dev/null 2>&1
+[ "$(arg_after --mmproj)" = "$ROOT/models/mmproj-other.gguf" ]
+check "vision: LOCAL_MMPROJ picks one by its name in the models folder" $?
+stop_server
+out="$(LOCAL_MMPROJ=0 "$HERE/local-claude" start 2>&1 >/dev/null)"
+! grep -q "vision" <<<"$out" && ! grep -qx -- --mmproj "$ROOT/llama/last-args" \
+  && grep -qx "vision:   off" <<<"$(LOCAL_MMPROJ=0 "$HERE/local-claude" status 2>/dev/null)"
+check "vision: LOCAL_MMPROJ=0 turns it off without a warning" $?
+stop_server
+rm -f "$ROOT/models/mmproj-"*.gguf
 
 # ---- tuned split ---------------------------------------------------------------
 # The stand-in build is called "llama" (its folder's name).

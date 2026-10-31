@@ -33,7 +33,7 @@
 #   LOCAL_PIN=0                        do not pin threads to cores
 #   LOCAL_UBATCH=2048                  micro-batch (default: tuned value, else from VRAM)
 #   LOCAL_LOAD_MODE=none               experts in pinned RAM: faster prefill, ~17 GB locked
-#   LOCAL_MMPROJ=~/models/mmproj-F16.gguf   enable vision (auto-detected if unambiguous)
+#   LOCAL_MMPROJ=~/models/mmproj-F16.gguf   enable vision (auto-detected if unambiguous); 0 = text only
 #   LOCAL_THINKING=0                   disable chain-of-thought (much faster turns)
 #   LOCAL_TEMPLATE=0                   use the model's stock chat template (see docs)
 #   LOCAL_BACKEND=ollama               fall back to the old ollama backend
@@ -257,6 +257,25 @@ pick_model() {
     [[ -n "$m" ]] && { echo "$m"; return; }
   done
   return 1
+}
+
+# pick_mmproj — the vision projector to load: LOCAL_MMPROJ (a path, or a name in
+# the models directory), else the one mmproj*.gguf there; with several we cannot
+# tell which model each belongs to. Prints its path, or fails printing why there
+# is none: nothing for LOCAL_MMPROJ=0, which turns vision off on purpose.
+pick_mmproj() {
+  local found=() f
+  case "${LOCAL_MMPROJ:-}" in
+    0) return 1 ;;
+    "") for f in "$MODELS_DIR"/mmproj*.gguf; do [[ -f "$f" ]] && found+=("$f"); done ;;
+    *) for f in "$LOCAL_MMPROJ" "$MODELS_DIR/$LOCAL_MMPROJ"; do [[ -f "$f" ]] && { echo "$f"; return; }; done
+       echo "LOCAL_MMPROJ not found: $LOCAL_MMPROJ"; return 1 ;;
+  esac
+  case ${#found[@]} in
+    1) echo "${found[0]}" ;;
+    0) echo "no mmproj*.gguf in $MODELS_DIR"; return 1 ;;
+    *) echo "several mmproj files in $MODELS_DIR — set LOCAL_MMPROJ to choose"; return 1 ;;
+  esac
 }
 
 if [[ "${1:-}" == "models" ]]; then
@@ -523,21 +542,13 @@ start_llama() {
   [[ "${LOCAL_THINKING:-1}" == "0" ]] && args+=(--chat-template-kwargs '{"enable_thinking":false}')
   [[ -n "$dev" ]] && args+=(--device "$dev")
   # Vision. Qwen3.6-35B-A3B is multimodal, but the vision tower ships as a
-  # separate "mmproj" file, so images only work once one is present. An explicit
-  # LOCAL_MMPROJ wins; otherwise pick one up automatically if exactly one is in
-  # the models directory (more than one and we cannot tell which model it belongs
-  # to, so we stay out of it).
-  local mmproj="${LOCAL_MMPROJ:-}"
-  if [[ -z "$mmproj" ]]; then
-    local found=()
-    for f in "$MODELS_DIR"/mmproj*.gguf; do [[ -f "$f" ]] && found+=("$f"); done
-    if [[ ${#found[@]} -eq 1 ]]; then
-      mmproj="${found[0]}"
-    elif [[ ${#found[@]} -gt 1 ]]; then
-      echo "[local-claude] several mmproj files in $MODELS_DIR — set LOCAL_MMPROJ to choose" >&2
-    fi
-  fi
-  if [[ -n "$mmproj" && -f "$mmproj" ]]; then
+  # separate "mmproj" file, so images only work once one is present. Without it
+  # the server rejects every request that holds an image, which Claude Code shows
+  # as a bare API error, so say so here.
+  local mmproj
+  if ! mmproj="$(pick_mmproj)"; then
+    [[ -n "$mmproj" ]] && echo "[local-claude] vision off ($mmproj): requests with an image will fail. See docs/MODELS.md, Vision; LOCAL_MMPROJ=0 hides this" >&2
+  else
     args+=(--mmproj "$mmproj")
     # The projector wants ~1 GB of VRAM — exactly what the expert layers are
     # competing for. An image is encoded once per message, not per token, so the
@@ -693,6 +704,18 @@ if [[ "${1:-}" == "status" ]]; then
   else
     echo "server:   down"
     echo "model:    $(pick_model 2>/dev/null || echo 'none found — run: local-claude pull ...')"
+  fi
+  # Vision: what the running server has loaded, else what a start would load.
+  vision=""
+  llama_up && vision="$(python3 -c "import sys,json;print(json.load(sys.stdin).get('modalities',{}).get('vision',''))" <<<"${props:-}" 2>/dev/null || true)"
+  if mm="$(pick_mmproj)"; then
+    case "$vision" in
+      True)  echo "vision:   on" ;;
+      False) echo "vision:   off — $(basename "$mm") is there now; restart the server to load it (local-claude stop, when no session is open)" ;;
+      *)     echo "vision:   $(basename "$mm")" ;;
+    esac
+  elif [[ "$vision" == True ]]; then echo "vision:   on"
+  else echo "vision:   off${mm:+ ($mm): requests with an image fail — see docs/MODELS.md, Vision}"
   fi
   # The watcher's latest note on a crash (see watch_llama).
   [[ -s "$CRASH_NOTE" ]] && echo "last crash: $(cat "$CRASH_NOTE")"
